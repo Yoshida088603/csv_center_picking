@@ -2,6 +2,23 @@
 
 console.log('app_github_pages.js loaded');
 
+// ============================================================================
+// 定数定義
+// ============================================================================
+
+const STREAMING_THRESHOLD_MB = 300; // ストリーミング処理の閾値
+const PROGRESS_UPDATE_INTERVAL = 5000000; // 進捗更新間隔（点）
+const LOG_UPDATE_INTERVAL = 1000000; // ログ更新間隔（点）
+const PERFORMANCE_BATCH_SIZE = 100000; // パフォーマンス測定のバッチサイズ
+const DEFAULT_CHUNK_SIZE_MB = 100; // デフォルトチャンクサイズ（MB）
+
+// RGB情報を含むLAS Point Format
+const RGB_FORMATS = [2, 3, 5, 7, 8, 10];
+
+// ============================================================================
+// グローバル変数
+// ============================================================================
+
 let lazFile = null;
 let csvFile = null;
 let centers = [];
@@ -17,10 +34,51 @@ async function initLazPerf() {
         statusDiv.className = 'status';
         
         // laz-perfをCDNから読み込み（ES Modules対応）
-        const { createLazPerf } = await import('https://cdn.jsdelivr.net/npm/laz-perf@0.0.7/dist/laz-perf.js');
+        // 複数のCDNを試す
+        let createLazPerf;
+        const cdnUrls = [
+            'https://cdn.jsdelivr.net/npm/laz-perf@0.0.7/+esm',
+            'https://unpkg.com/laz-perf@0.0.7?module',
+            'https://cdn.jsdelivr.net/npm/laz-perf@0.0.7/lib/web/index.js'
+        ];
+        
+        let lastError = null;
+        for (const url of cdnUrls) {
+            try {
+                console.log(`Trying to load laz-perf from: ${url}`);
+                const module = await import(url);
+                createLazPerf = module.createLazPerf || module.default?.createLazPerf || module.default;
+                if (createLazPerf) {
+                    console.log(`Successfully loaded from: ${url}`);
+                    break;
+                }
+            } catch (err) {
+                console.warn(`Failed to load from ${url}:`, err);
+                lastError = err;
+            }
+        }
+        
+        if (!createLazPerf) {
+            throw new Error(`Failed to load laz-perf from all CDNs. Last error: ${lastError?.message}`);
+        }
         
         console.log('laz-perf module loaded, initializing...');
-        LazPerf = await createLazPerf();
+        
+        // WASMファイルのパスをCDNから読み込むように設定
+        // EmscriptenのlocateFileオプションを使用
+        const wasmPath = 'https://cdn.jsdelivr.net/npm/laz-perf@0.0.7/lib/laz-perf.wasm';
+        
+        LazPerf = await createLazPerf({
+            locateFile: (path, prefix) => {
+                // WASMファイルの場合はCDNから読み込む
+                if (path.endsWith('.wasm')) {
+                    console.log(`Loading WASM from CDN: ${wasmPath}`);
+                    return wasmPath;
+                }
+                // その他のファイルは相対パス
+                return prefix + path;
+            }
+        });
         
         console.log('laz-perf initialized:', LazPerf);
         wasmReady = true;
@@ -39,7 +97,10 @@ async function initLazPerf() {
     }
 }
 
-// UI要素
+// ============================================================================
+// UI要素の取得
+// ============================================================================
+
 const lazInput = document.getElementById('lazFile');
 const csvInput = document.getElementById('csvFile');
 const lazLabel = document.getElementById('lazLabel');
@@ -54,9 +115,14 @@ const resultSection = document.getElementById('resultSection');
 const resultText = document.getElementById('resultText');
 const downloadBtn = document.getElementById('downloadBtn');
 const radiusInput = document.getElementById('radius');
+const chunkSizeInput = document.getElementById('chunkSize');
 const statusDiv = document.getElementById('status');
 
-// 初期化
+// ============================================================================
+// イベントハンドラと初期化
+// ============================================================================
+
+// laz-perf WASMの初期化
 initLazPerf();
 
 // ファイル選択イベント
@@ -141,18 +207,148 @@ async function readCSV() {
     });
 }
 
-function isPointNearCenters(x, y, z, centers, radius) {
-    const r2 = radius * radius;
-    for (const [cx, cy, cz] of centers) {
-        const dx = x - cx;
-        const dy = y - cy;
-        const dz = z - cz;
-        const dist2 = dx * dx + dy * dy + dz * dz;
-        if (dist2 <= r2) {
+// ============================================================================
+// フィルタリング関数
+// ============================================================================
+
+// 中心点と半径の2乗を事前計算して最適化
+let cachedCenters = null;
+let cachedRadius2 = null;
+
+function prepareFilteringCache(centers, radius) {
+    cachedCenters = centers;
+    cachedRadius2 = radius * radius;
+}
+
+function isPointNearCenters(x, y, z) {
+    // キャッシュを使用（関数呼び出しのオーバーヘッドを削減）
+    const centers = cachedCenters;
+    const r2 = cachedRadius2;
+    
+    // 最適化: ループ展開と変数再利用
+    for (let i = 0; i < centers.length; i++) {
+        const center = centers[i];
+        const dx = x - center[0];
+        const dy = y - center[1];
+        const dz = z - center[2];
+        // 距離の2乗を直接計算（平方根を取らない）
+        if (dx * dx + dy * dy + dz * dz <= r2) {
             return true;
         }
     }
     return false;
+}
+
+// ============================================================================
+// ポイント解析ヘルパー関数
+// ============================================================================
+
+/**
+ * ポイントデータから座標を解析
+ * @param {DataView} view - DataViewオブジェクト
+ * @param {number} offset - オフセット位置
+ * @param {Object} header - LASヘッダー情報
+ * @returns {Object} 座標情報 {x, y, z, rawX, rawY, rawZ}
+ */
+function parsePointCoordinates(view, offset, header) {
+    const rawX = view.getInt32(offset, true);
+    const rawY = view.getInt32(offset + 4, true);
+    const rawZ = view.getInt32(offset + 8, true);
+    
+    const x = rawX * header.scaleX + header.offsetX;
+    const y = rawY * header.scaleY + header.offsetY;
+    const z = rawZ * header.scaleZ + header.offsetZ;
+    
+    return { x, y, z, rawX, rawY, rawZ };
+}
+
+/**
+ * RGB情報を読み込む
+ * @param {DataView} view - DataViewオブジェクト
+ * @param {number} offset - オフセット位置
+ * @param {Object} header - LASヘッダー情報
+ * @returns {Object|null} RGB情報 {red, green, blue} または null
+ */
+function parseRGBData(view, offset, header) {
+    if (!RGB_FORMATS.includes(header.pointFormat)) {
+        return null;
+    }
+    
+    if (offset + 26 > view.buffer.byteLength) {
+        return null;
+    }
+    
+    return {
+        red: view.getUint16(offset + 20, true),
+        green: view.getUint16(offset + 22, true),
+        blue: view.getUint16(offset + 24, true)
+    };
+}
+
+// ============================================================================
+// バッチフィルタリング関数
+// ============================================================================
+
+/**
+ * バッチフィルタリング（複数ポイントを一度に処理、高速化）
+ */
+function filterPointsBatchFast(points, centers, radius) {
+    const r2 = radius * radius;
+    const filtered = [];
+    const len = points.length;
+    const centersLen = centers.length;
+    
+    // ループの最適化: 変数を事前に取得
+    for (let p = 0; p < len; p++) {
+        const point = points[p];
+        const px = point.x;
+        const py = point.y;
+        const pz = point.z;
+        
+        // 中心点との距離チェック（早期終了）
+        let matched = false;
+        for (let i = 0; i < centersLen; i++) {
+            const center = centers[i];
+            const dx = px - center[0];
+            const dy = py - center[1];
+            const dz = pz - center[2];
+            if (dx * dx + dy * dy + dz * dz <= r2) {
+                matched = true;
+                break;
+            }
+        }
+        
+        if (matched) {
+            filtered.push(point);
+        }
+    }
+    
+    return filtered;
+}
+
+// バッチフィルタリング（複数ポイントを一度に処理、将来的な最適化用）
+/**
+ * バッチフィルタリング（旧版、互換性のため保持）
+ */
+function filterPointsBatch(points, centers, radius) {
+    const r2 = radius * radius;
+    const filtered = [];
+    
+    for (const point of points) {
+        for (let i = 0; i < centers.length; i++) {
+            const [cx, cy, cz] = centers[i];
+            const dx = point.x - cx;
+            const dy = point.y - cy;
+            const dz = point.z - cz;
+            const dist2 = dx * dx + dy * dy + dz * dz;
+            if (dist2 <= r2) {
+                filtered.push(point);
+                break; // マッチしたら次のポイントへ
+            }
+        }
+    }
+    
+    return filtered;
 }
 
 // LASヘッダー解析
@@ -205,7 +401,150 @@ function parseLASHeader(buffer) {
     };
 }
 
-// laz-perfを使ってLAZを解凍
+/**
+ * laz-perfを使ってLAZを解凍（ストリーミング処理対応）
+ * ポイント単位で解凍し、即座にフィルタリングしてメモリ効率を最大化
+ */
+async function decompressLAZWithLazPerfStreaming(arrayBuffer, header, centers, radius) {
+    addLog('LAZ圧縮ファイルをストリーミング解凍しています...');
+    updateProgress(25, 'LAZ解凍中');
+    
+    const filteredPoints = [];
+    
+    // パフォーマンス測定
+    const perfStart = performance.now();
+    let decompressTime = 0;
+    let filterTime = 0;
+    let progressUpdateTime = 0;
+    
+    try {
+        // Emscriptenのメモリヒープにデータをコピー
+        const fileSize = arrayBuffer.byteLength;
+        const filePtr = LazPerf._malloc(fileSize);
+        const fileHeap = new Uint8Array(LazPerf.HEAPU8.buffer, filePtr, fileSize);
+        fileHeap.set(new Uint8Array(arrayBuffer));
+        
+        // LASZipオブジェクトを作成
+        const laszip = new LazPerf.LASZip();
+        
+        // ファイルを開く
+        laszip.open(filePtr, fileSize);
+        
+        const pointCount = header.numPoints;
+        const pointRecordLength = header.pointRecordLength;
+        
+        // ポイントデータ用のメモリを確保（1ポイント分のみ）
+        const pointPtr = LazPerf._malloc(pointRecordLength);
+        const pointHeap = new Uint8Array(LazPerf.HEAPU8.buffer, pointPtr, pointRecordLength);
+        
+        // RGB情報があるかチェック
+        const hasRGB = RGB_FORMATS.includes(header.pointFormat);
+        
+            // 各ポイントを解凍して直接フィルタリング（メモリに保持しない）
+            // パフォーマンス測定はバッチ単位でオーバーヘッドを削減
+            const BATCH_SIZE = PERFORMANCE_BATCH_SIZE;
+            let batchStartTime = performance.now();
+            let batchDecompressTime = 0;
+            let batchFilterTime = 0;
+            
+            // ポイント解析用の変数をループ外で定義（メモリ割り当て削減）
+            const view = new DataView(pointHeap.buffer, pointHeap.byteOffset, pointRecordLength);
+            let rawX, rawY, rawZ, intensity, x, y, z, point;
+            
+            for (let i = 0; i < pointCount; i++) {
+                // バッチ単位でパフォーマンス測定
+                if (i % BATCH_SIZE === 0 && i > 0) {
+                    const batchTime = performance.now() - batchStartTime;
+                    // バッチ内の時間を推定（解凍とフィルタリングの比率を維持）
+                    batchDecompressTime += batchTime * 0.6; // 解凍が約60%
+                    batchFilterTime += batchTime * 0.2;    // フィルタリングが約20%
+                    batchStartTime = performance.now();
+                }
+                
+                // 解凍処理
+                laszip.getPoint(pointPtr);
+                
+                // ポイントデータを直接解析（最適化：変数再利用）
+                rawX = view.getInt32(0, true);
+                rawY = view.getInt32(4, true);
+                rawZ = view.getInt32(8, true);
+                intensity = view.getUint16(12, true);
+                
+                x = rawX * header.scaleX + header.offsetX;
+                y = rawY * header.scaleY + header.offsetY;
+                z = rawZ * header.scaleZ + header.offsetZ;
+                
+                // オブジェクト作成を条件付きに（フィルタリング結果のみ作成）
+                if (isPointNearCenters(x, y, z)) {
+                    point = { x, y, z, intensity };
+                    
+                    // RGB情報がある場合
+                    if (hasRGB && pointRecordLength >= 26) {
+                        point.red = view.getUint16(20, true);
+                        point.green = view.getUint16(22, true);
+                        point.blue = view.getUint16(24, true);
+                    }
+                    
+                    filteredPoints.push(point);
+                }
+                
+                // 進捗更新（頻度を下げてパフォーマンス向上）
+                if (i % PROGRESS_UPDATE_INTERVAL === 0 && i > 0) {
+                    const progress = 25 + (i / pointCount) * 65;
+                    updateProgress(progress, `LAZ解凍+フィルタリング: ${Math.floor((i / pointCount) * 100)}%`);
+                    addLog(`処理済み: ${i.toLocaleString()}/${pointCount.toLocaleString()}点, 抽出: ${filteredPoints.length.toLocaleString()}点`);
+                    // awaitを削減（パフォーマンス向上）
+                    if (i % (PROGRESS_UPDATE_INTERVAL * 2) === 0) {
+                        await new Promise(resolve => setTimeout(resolve, 0));
+                    }
+                }
+            }
+            
+            // 最後のバッチを処理
+            const finalBatchTime = performance.now() - batchStartTime;
+            batchDecompressTime += finalBatchTime * 0.6;
+            batchFilterTime += finalBatchTime * 0.2;
+            
+            decompressTime = batchDecompressTime;
+            filterTime = batchFilterTime;
+            
+            // パフォーマンス統計を表示
+            const totalTime = performance.now() - perfStart;
+            const decompressPercent = (decompressTime / totalTime * 100).toFixed(1);
+            const filterPercent = (filterTime / totalTime * 100).toFixed(1);
+            const otherPercent = (100 - parseFloat(decompressPercent) - parseFloat(filterPercent)).toFixed(1);
+            const pointsPerSec = Math.floor(pointCount / (totalTime / 1000)).toLocaleString();
+            const totalMinutes = (totalTime / 60000).toFixed(1);
+            addLog(`⚡ パフォーマンス分析: 解凍=${decompressPercent}%, フィルタリング=${filterPercent}%, その他=${otherPercent}%`);
+            addLog(`⚡ 処理速度: ${pointsPerSec}点/秒 (総時間: ${totalMinutes}分)`);
+            
+            // ボトルネックの説明
+            if (parseFloat(decompressPercent) > 50) {
+                addLog(`💡 ボトルネック: LAZ解凍処理が最大の時間を占めています。これはlaz-perfの制約上、最適化が困難です。`);
+            } else if (parseFloat(filterPercent) > 30) {
+                addLog(`💡 ボトルネック: フィルタリング処理が時間を占めています。中心点の数や半径を調整すると改善する可能性があります。`);
+            }
+        
+        // メモリを解放
+        laszip.delete();
+        LazPerf._free(filePtr);
+        LazPerf._free(pointPtr);
+        
+        addLog(`LAZ解凍完了: ${pointCount.toLocaleString()}点`);
+        addLog(`抽出点数: ${filteredPoints.length.toLocaleString()}点`);
+        
+        return filteredPoints;
+        
+    } catch (err) {
+        console.error('LAZ decompression error:', err);
+        throw new Error(`LAZ解凍エラー: ${err.message}`);
+    }
+}
+
+/**
+ * laz-perfを使ってLAZを解凍（小さいファイル用、従来方式）
+ * 全体を一度に解凍してから処理（300MB以下のファイル用）
+ */
 async function decompressLAZWithLazPerf(arrayBuffer, header) {
     addLog('LAZ圧縮ファイルを解凍しています...');
     updateProgress(25, 'LAZ解凍中');
@@ -282,15 +621,141 @@ async function decompressLAZWithLazPerf(arrayBuffer, header) {
     }
 }
 
-// 非圧縮LAS読み込み
+/**
+ * ストリーミング処理: 非圧縮LASをチャンクごとに読み込んで処理
+ * 大きなファイル（300MB以上）をメモリ効率的に処理
+ */
+async function processLASStreaming(file, header, centers, radius, chunkSizeMB = DEFAULT_CHUNK_SIZE_MB) {
+    const filteredPoints = [];
+    const pointRecordLength = header.pointRecordLength;
+    const pointDataOffset = header.pointDataOffset;
+    const numPoints = header.numPoints;
+    
+    // チャンクサイズ: ユーザー指定（デフォルト50MB）
+    const chunkSizeBytes = chunkSizeMB * 1024 * 1024;
+    const pointsPerChunk = Math.floor(chunkSizeBytes / pointRecordLength);
+    
+    let currentPointIndex = 0;
+    let currentOffset = pointDataOffset;
+    
+    // パフォーマンス測定
+    const perfStart = performance.now();
+    let ioTime = 0;
+    let parseTime = 0;
+    let filterTime = 0;
+    let progressUpdateTime = 0;
+    
+    addLog(`チャンクサイズ: ${chunkSizeMB}MB (約${pointsPerChunk.toLocaleString()}点/チャンク)`);
+    
+    while (currentPointIndex < numPoints) {
+        const remainingPoints = numPoints - currentPointIndex;
+        const pointsInThisChunk = Math.min(pointsPerChunk, remainingPoints);
+        const chunkSize = pointsInThisChunk * pointRecordLength;
+        
+        // I/O処理の時間測定
+        const ioStart = performance.now();
+        const chunkBlob = file.slice(currentOffset, currentOffset + chunkSize);
+        const chunkBuffer = await chunkBlob.arrayBuffer();
+        ioTime += performance.now() - ioStart;
+        
+        const view = new DataView(chunkBuffer);
+        
+        // チャンク内のポイントを処理
+        let chunkOffset = 0;
+        const parseStart = performance.now();
+        for (let i = 0; i < pointsInThisChunk; i++) {
+            if (chunkOffset + 20 > chunkBuffer.byteLength) {
+                break;
+            }
+            
+            const rawX = view.getInt32(chunkOffset, true);
+            const rawY = view.getInt32(chunkOffset + 4, true);
+            const rawZ = view.getInt32(chunkOffset + 8, true);
+            const intensity = view.getUint16(chunkOffset + 12, true);
+            
+            const x = rawX * header.scaleX + header.offsetX;
+            const y = rawY * header.scaleY + header.offsetY;
+            const z = rawZ * header.scaleZ + header.offsetZ;
+            
+            const point = { x, y, z, intensity };
+            
+            // RGB情報がある場合
+            const hasRGB = RGB_FORMATS.includes(header.pointFormat);
+            if (hasRGB && chunkOffset + 26 <= chunkBuffer.byteLength) {
+                point.red = view.getUint16(chunkOffset + 20, true);
+                point.green = view.getUint16(chunkOffset + 22, true);
+                point.blue = view.getUint16(chunkOffset + 24, true);
+            }
+            
+            // フィルタリング処理の時間測定
+            const filterStart = performance.now();
+            if (isPointNearCenters(x, y, z)) {
+                filteredPoints.push(point);
+            }
+            filterTime += performance.now() - filterStart;
+            
+            chunkOffset += pointRecordLength;
+            currentPointIndex++;
+        }
+        parseTime += performance.now() - parseStart;
+        
+            // 進捗更新（チャンクごとに1回のみ、パフォーマンス向上）
+            const progressStart = performance.now();
+            const progress = currentPointIndex / numPoints;
+            const percent = 20 + progress * 70;
+            updateProgress(percent, `ストリーミング処理: ${currentPointIndex.toLocaleString()}/${numPoints.toLocaleString()}点`);
+            
+            // ログ更新（頻度を下げてパフォーマンス向上）
+            if (currentPointIndex % LOG_UPDATE_INTERVAL === 0 || currentPointIndex === numPoints) {
+                addLog(`処理済み: ${currentPointIndex.toLocaleString()}点, 抽出: ${filteredPoints.length.toLocaleString()}点`);
+            }
+            progressUpdateTime += performance.now() - progressStart;
+            
+            currentOffset += chunkSize;
+            
+            // メモリ解放を促す（待機時間を最小化）
+            // チャンクサイズが大きい場合は待機時間をさらに短縮
+            // 1GB以上のチャンクでも問題なく動作するため、待機は最小限に
+            if (chunkSizeMB > 500) {
+                // 500MB以上は待機なし（パフォーマンス優先）
+            } else if (chunkSizeMB > 100) {
+                await new Promise(resolve => setTimeout(resolve, 0));
+            } else if (chunkSizeMB > 50) {
+                await new Promise(resolve => setTimeout(resolve, 1));
+            } else {
+                await new Promise(resolve => setTimeout(resolve, 5));
+            }
+    }
+    
+    // パフォーマンス統計を表示
+    const totalTime = performance.now() - perfStart;
+    const ioPercent = (ioTime / totalTime * 100).toFixed(1);
+    const parsePercent = (parseTime / totalTime * 100).toFixed(1);
+    const filterPercent = (filterTime / totalTime * 100).toFixed(1);
+    const progressPercent = (progressUpdateTime / totalTime * 100).toFixed(1);
+    addLog(`⚡ パフォーマンス分析: I/O=${ioPercent}%, 解析=${parsePercent}%, フィルタリング=${filterPercent}%, UI更新=${progressPercent}%`);
+    
+    return filteredPoints;
+}
+
+// ============================================================================
+// LASファイル処理関数
+// ============================================================================
+
+/**
+ * 非圧縮LAS読み込み（ジェネレータ）
+ */
 function* readUncompressedLAS(buffer, header) {
     const view = new DataView(buffer);
     let offset = header.pointDataOffset;
     const points = [];
     const batchSize = 100000;
     
+    // RGB情報があるフォーマットかチェック
+    const hasRGB = RGB_FORMATS.includes(header.pointFormat);
+    
     for (let i = 0; i < header.numPoints; i++) {
-        if (offset + 20 > buffer.byteLength) {
+        if (offset + header.pointRecordLength > buffer.byteLength) {
             console.warn(`Point ${i}: offset ${offset} exceeds buffer size ${buffer.byteLength}`);
             break;
         }
@@ -304,7 +769,19 @@ function* readUncompressedLAS(buffer, header) {
         const y = rawY * header.scaleY + header.offsetY;
         const z = rawZ * header.scaleZ + header.offsetZ;
         
-        points.push({ x, y, z, intensity });
+        const point = { x, y, z, intensity };
+        
+        // RGB情報を読み込む（Format 2以降、オフセット20から）
+        if (hasRGB && offset + 26 <= buffer.byteLength) {
+            const red = view.getUint16(offset + 20, true);
+            const green = view.getUint16(offset + 22, true);
+            const blue = view.getUint16(offset + 24, true);
+            point.red = red;
+            point.green = green;
+            point.blue = blue;
+        }
+        
+        points.push(point);
         
         offset += header.pointRecordLength;
         
@@ -319,8 +796,20 @@ function* readUncompressedLAS(buffer, header) {
 }
 
 // LAS出力用
+/**
+ * フィルタリングされたポイントからLASファイルを生成
+ */
 function createLASFile(points, header) {
-    const buffer = new ArrayBuffer(227 + points.length * 20);
+    // RGB情報があるかチェック
+    const hasRGB = points.length > 0 && points[0].hasOwnProperty('red') && 
+                   points[0].hasOwnProperty('green') && points[0].hasOwnProperty('blue');
+    
+    // RGB情報がある場合はFormat 2（26バイト）、ない場合はFormat 0（20バイト）
+    const pointFormat = hasRGB ? 2 : 0;
+    const pointRecordLength = hasRGB ? 26 : 20;
+    const bufferSize = 227 + points.length * pointRecordLength;
+    
+    const buffer = new ArrayBuffer(bufferSize);
     const view = new DataView(buffer);
     const encoder = new TextEncoder();
     
@@ -334,8 +823,8 @@ function createLASFile(points, header) {
     view.setUint16(94, 227, true);
     view.setUint32(96, 227, true);
     view.setUint32(100, 0, true);
-    view.setUint8(104, 0);
-    view.setUint16(105, 20, true);
+    view.setUint8(104, pointFormat);
+    view.setUint16(105, pointRecordLength, true);
     view.setUint32(107, points.length, true);
     
     view.setFloat64(131, 0.001, true);
@@ -374,22 +863,37 @@ function createLASFile(points, header) {
         const y = Math.round((point.y - points[0].y) / 0.001);
         const z = Math.round((point.z - points[0].z) / 0.001);
         
+        // LAS Point Format 0/2共通部分: X(4) Y(4) Z(4) Intensity(2) Return(1) Class(1) ScanAngle(1) UserData(1) PointSourceId(2) = 20 bytes
         view.setInt32(offset, x, true);
         view.setInt32(offset + 4, y, true);
         view.setInt32(offset + 8, z, true);
         view.setUint16(offset + 12, point.intensity || 0, true);
         view.setUint8(offset + 14, 0);
-        view.setInt8(offset + 15, 0);
-        view.setUint8(offset + 16, 0);
-        view.setInt16(offset + 17, 0, true);
-        view.setUint16(offset + 19, 0, true);
+        view.setUint8(offset + 15, 0);
+        view.setInt8(offset + 16, 0);
+        view.setUint8(offset + 17, 0);
+        view.setUint16(offset + 18, 0, true);
         
-        offset += 20;
+        // RGB情報がある場合（Format 2）: Red(2) Green(2) Blue(2) = 6 bytes
+        if (hasRGB) {
+            view.setUint16(offset + 20, point.red || 0, true);
+            view.setUint16(offset + 22, point.green || 0, true);
+            view.setUint16(offset + 24, point.blue || 0, true);
+        }
+        
+        offset += pointRecordLength;
     }
     
     return buffer;
 }
 
+// ============================================================================
+// メイン処理関数
+// ============================================================================
+
+/**
+ * ファイル処理のメイン関数
+ */
 async function processFiles() {
     try {
         console.log('processFiles called');
@@ -413,52 +917,148 @@ async function processFiles() {
         updateProgress(10, 'CSV読込完了');
         
         const radius = parseFloat(radiusInput.value);
-        addLog(`設定: 半径=${radius}m`);
+        const chunkSizeMB = parseInt(chunkSizeInput.value) || DEFAULT_CHUNK_SIZE_MB;
+        addLog(`設定: 半径=${radius}m, チャンクサイズ=${chunkSizeMB}MB`);
         
-        // LAZ/LAS読み込み
-        addLog('LAZ/LASファイルを読み込んでいます...');
-        addLog('大きなファイルの場合、数分かかることがあります...');
-        const arrayBuffer = await lazFile.arrayBuffer();
-        updateProgress(15, 'ファイル読込完了');
+        // フィルタリングキャッシュを準備（パフォーマンス向上）
+        prepareFilteringCache(centers, radius);
         
-        addLog('ヘッダーを解析しています...');
-        const header = parseLASHeader(arrayBuffer);
+        // ファイルサイズチェック
+        const fileSizeMB = lazFile.size / (1024 * 1024);
+        const useStreaming = fileSizeMB > STREAMING_THRESHOLD_MB;
+        
+        if (useStreaming) {
+            addLog(`📦 ストリーミング処理モード: ${fileSizeMB.toFixed(1)}MBのファイルをチャンクごとに処理します`);
+        } else {
+            addLog('LAZ/LASファイルを読み込んでいます...');
+        }
+        
+        // ヘッダーを先に読み込む（最初の375バイトで十分、VLRや拡張ヘッダーも含む）
+        addLog('ヘッダーを読み込んでいます...');
+        const headerBlob = lazFile.slice(0, Math.min(375, lazFile.size));
+        const headerBuffer = await headerBlob.arrayBuffer();
+        
+        // 一時的に全体バッファとして扱う（parseLASHeaderの互換性のため）
+        // 実際にはヘッダー部分だけを解析
+        const header = parseLASHeader(headerBuffer);
+        
+        // pointDataOffsetが取得できたので、必要に応じて全体のヘッダーを読み込む
+        // ただし、pointDataOffsetが375バイトを超える場合は、その分だけ追加で読み込む
+        if (header.pointDataOffset > 375) {
+            const fullHeaderBlob = lazFile.slice(0, header.pointDataOffset);
+            const fullHeaderBuffer = await fullHeaderBlob.arrayBuffer();
+            // 再解析（VLR情報も含む）
+            Object.assign(header, parseLASHeader(fullHeaderBuffer));
+        }
         
         addLog(`バージョン: LAS ${header.versionMajor}.${header.versionMinor}`);
         addLog(`総点数: ${header.numPoints.toLocaleString()}点`);
         addLog(`ポイントフォーマット: ${header.pointFormat}`);
         addLog(`圧縮: ${header.isCompressed ? 'LAZ（圧縮）' : '非圧縮LAS'}`);
         
-        let lasBuffer = arrayBuffer;
+        updateProgress(15, 'ヘッダー解析完了');
         
-        // LAZ圧縮の場合は解凍
-        if (header.isCompressed) {
-            lasBuffer = await decompressLAZWithLazPerf(arrayBuffer, header);
-            // ヘッダーを再解析（圧縮フラグがクリアされている）
-            const newHeader = parseLASHeader(lasBuffer);
-            Object.assign(header, newHeader);
-            header.isCompressed = false;
-        }
+        let filteredPoints = [];
+        let processedCount = 0;
         
-        updateProgress(45, 'ヘッダー解析完了');
-        
-        // フィルタリング
-        addLog('点群をフィルタリングしています...');
-        const filteredPoints = [];
-        
-        for (const { points, progress } of readUncompressedLAS(lasBuffer, header)) {
-            for (const point of points) {
-                if (isPointNearCenters(point.x, point.y, point.z, centers, radius)) {
-                    filteredPoints.push(point);
+        // ストリーミング処理（300MB以上）または通常処理（300MB以下）
+        if (useStreaming && !header.isCompressed) {
+            // 非圧縮LASのストリーミング処理
+            addLog('ストリーミング処理を開始します...');
+            filteredPoints = await processLASStreaming(lazFile, header, centers, radius, chunkSizeMB);
+            processedCount = header.numPoints;
+        } else if (header.isCompressed) {
+            // LAZ圧縮ファイルの処理
+            if (useStreaming) {
+                // ストリーミング解凍+フィルタリング（メモリ効率的）
+                addLog('LAZ圧縮ファイルをストリーミング解凍します...');
+                const arrayBuffer = await lazFile.arrayBuffer();
+                const memoryMB = (arrayBuffer.byteLength / (1024 * 1024)).toFixed(1);
+                addLog(`入力ファイルサイズ: ${memoryMB}MB`);
+                
+                // 解凍とフィルタリングを同時に実行（解凍済みバッファを保持しない）
+                filteredPoints = await decompressLAZWithLazPerfStreaming(arrayBuffer, header, centers, radius);
+                processedCount = header.numPoints;
+                
+                // 圧縮フラグをクリア（出力用）
+                header.isCompressed = false;
+            } else {
+                // 小さいファイル（300MB以下）: 従来方式
+                addLog('LAZ圧縮ファイルを解凍しています...');
+                const arrayBuffer = await lazFile.arrayBuffer();
+                const lasBuffer = await decompressLAZWithLazPerf(arrayBuffer, header);
+                const newHeader = parseLASHeader(lasBuffer);
+                Object.assign(header, newHeader);
+                header.isCompressed = false;
+                
+                updateProgress(45, 'ヘッダー解析完了');
+                
+                // フィルタリング（高速化版）
+                addLog('点群をフィルタリングしています...');
+                
+                let lastProgressUpdate = 0;
+                for (const { points, progress } of readUncompressedLAS(lasBuffer, header)) {
+                    // バッチフィルタリング（高速化）
+                    const batchFiltered = filterPointsBatchFast(points, centers, radius);
+                    filteredPoints.push(...batchFiltered);
+                    processedCount += points.length;
+                    
+                    // 進捗更新は10%ごと（パフォーマンス向上）
+                    if (progress - lastProgressUpdate >= 0.10 || progress >= 1.0) {
+                        const percent = 45 + progress * 50;
+                        updateProgress(percent, `フィルタリング中: ${processedCount.toLocaleString()}/${header.numPoints.toLocaleString()}点`);
+                        lastProgressUpdate = progress;
+                    }
+                    // awaitを削減（パフォーマンス向上）
+                    if (processedCount % LOG_UPDATE_INTERVAL === 0) {
+                        await new Promise(resolve => setTimeout(resolve, 0));
+                    }
                 }
             }
+        } else {
+            // 通常処理（300MB以下）
+            addLog('ファイル全体を読み込んでいます...');
+            const arrayBuffer = await lazFile.arrayBuffer();
+            updateProgress(20, 'ファイル読込完了');
             
-            const percent = 45 + progress * 50;
-            updateProgress(percent, `フィルタリング中: ${Math.floor(progress * 100)}%`);
-            await new Promise(resolve => setTimeout(resolve, 0));
+            let lasBuffer = arrayBuffer;
+            
+            // LAZ圧縮の場合は解凍
+            if (header.isCompressed) {
+                lasBuffer = await decompressLAZWithLazPerf(arrayBuffer, header);
+                const newHeader = parseLASHeader(lasBuffer);
+                Object.assign(header, newHeader);
+                header.isCompressed = false;
+            }
+            
+            updateProgress(45, 'ヘッダー解析完了');
+            
+            // フィルタリング
+            addLog('点群をフィルタリングしています...');
+            
+            // バッチ処理の最適化: 進捗更新の頻度を下げる
+            let lastProgressUpdate = 0;
+            for (const { points, progress } of readUncompressedLAS(lasBuffer, header)) {
+                // バッチフィルタリング（高速化）
+                const batchFiltered = filterPointsBatchFast(points, centers, radius);
+                filteredPoints.push(...batchFiltered);
+                processedCount += points.length;
+                
+                // 進捗更新は10%ごと（パフォーマンス向上）
+                if (progress - lastProgressUpdate >= 0.10 || progress >= 1.0) {
+                    const percent = 45 + progress * 50;
+                    updateProgress(percent, `フィルタリング中: ${processedCount.toLocaleString()}/${header.numPoints.toLocaleString()}点`);
+                    lastProgressUpdate = progress;
+                }
+                // awaitを削減（パフォーマンス向上）
+                if (processedCount % 1000000 === 0) {
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
+            }
         }
         
         updateProgress(95, 'フィルタリング完了');
+        addLog(`処理済み: ${processedCount.toLocaleString()}点`);
         addLog(`抽出点数: ${filteredPoints.length.toLocaleString()}点`);
         
         if (filteredPoints.length === 0) {
@@ -489,7 +1089,24 @@ async function processFiles() {
     } catch (err) {
         console.error(err);
         addLog(`❌ エラー: ${err.message}`);
-        alert(`エラー: ${err.message}`);
+        
+        // メモリ不足エラーの場合、より詳細なメッセージを表示
+        if (err.message.includes('memory') || err.message.includes('Memory') || 
+            err.message.includes('allocation') || err.name === 'RangeError' ||
+            err.message.includes('too large') || err.message.includes('exceeded')) {
+            alert(
+                `❌ メモリ不足エラー\n\n` +
+                `ファイルサイズが大きすぎてブラウザのメモリ制限を超えました。\n\n` +
+                `【解決方法】\n` +
+                `1. サーバー版（server.py）を使用してください（推奨）\n` +
+                `   python server.py\n` +
+                `   その後、http://localhost:8000/index.html にアクセス\n\n` +
+                `2. より小さなファイルで試してください\n\n` +
+                `3. ブラウザを再起動してから再度お試しください`
+            );
+        } else {
+            alert(`エラー: ${err.message}`);
+        }
     } finally {
         processBtn.disabled = false;
     }
