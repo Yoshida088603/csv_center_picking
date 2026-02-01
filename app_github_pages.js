@@ -116,6 +116,8 @@ const resultText = document.getElementById('resultText');
 const downloadBtn = document.getElementById('downloadBtn');
 const radiusInput = document.getElementById('radius');
 const chunkSizeInput = document.getElementById('chunkSize');
+const filterSphereInput = document.getElementById('filterSphere');
+const filterHorizontalInput = document.getElementById('filterHorizontal');
 const statusDiv = document.getElementById('status');
 
 // ============================================================================
@@ -211,30 +213,34 @@ async function readCSV() {
 // フィルタリング関数
 // ============================================================================
 
-// 中心点と半径の2乗を事前計算して最適化
+// 中心点と半径の2乗・フィルタ種別を事前計算して最適化
 let cachedCenters = null;
 let cachedRadius2 = null;
+let cachedUseSphere = true;
+let cachedUseHorizontal = false;
 
-function prepareFilteringCache(centers, radius) {
+function prepareFilteringCache(centers, radius, useSphere = true, useHorizontal = false) {
     cachedCenters = centers;
     cachedRadius2 = radius * radius;
+    cachedUseSphere = useSphere;
+    cachedUseHorizontal = useHorizontal;
 }
 
 function isPointNearCenters(x, y, z) {
-    // キャッシュを使用（関数呼び出しのオーバーヘッドを削減）
     const centers = cachedCenters;
     const r2 = cachedRadius2;
-    
-    // 最適化: ループ展開と変数再利用
+    const useSphere = cachedUseSphere;
+    const useHorizontal = cachedUseHorizontal;
+
     for (let i = 0; i < centers.length; i++) {
         const center = centers[i];
         const dx = x - center[0];
         const dy = y - center[1];
         const dz = z - center[2];
-        // 距離の2乗を直接計算（平方根を取らない）
-        if (dx * dx + dy * dy + dz * dz <= r2) {
-            return true;
-        }
+        const dist2xy = dx * dx + dy * dy;
+        const dist2xyz = dist2xy + dz * dz;
+        if (useSphere && dist2xyz <= r2) return true;
+        if (useHorizontal && dist2xy <= r2) return true;
     }
     return false;
 }
@@ -291,63 +297,58 @@ function parseRGBData(view, offset, header) {
 
 /**
  * バッチフィルタリング（複数ポイントを一度に処理、高速化）
+ * useSphere: スフィア（3D）条件, useHorizontal: 水平投影（XY円）条件。どちらか満たせば採用。
  */
-function filterPointsBatchFast(points, centers, radius) {
+function filterPointsBatchFast(points, centers, radius, useSphere = true, useHorizontal = false) {
     const r2 = radius * radius;
     const filtered = [];
     const len = points.length;
     const centersLen = centers.length;
-    
-    // ループの最適化: 変数を事前に取得
+
     for (let p = 0; p < len; p++) {
         const point = points[p];
         const px = point.x;
         const py = point.y;
         const pz = point.z;
-        
-        // 中心点との距離チェック（早期終了）
+
         let matched = false;
         for (let i = 0; i < centersLen; i++) {
             const center = centers[i];
             const dx = px - center[0];
             const dy = py - center[1];
             const dz = pz - center[2];
-            if (dx * dx + dy * dy + dz * dz <= r2) {
-                matched = true;
-                break;
-            }
+            const dist2xy = dx * dx + dy * dy;
+            const dist2xyz = dist2xy + dz * dz;
+            if (useSphere && dist2xyz <= r2) { matched = true; break; }
+            if (useHorizontal && dist2xy <= r2) { matched = true; break; }
         }
-        
-        if (matched) {
-            filtered.push(point);
-        }
+
+        if (matched) filtered.push(point);
     }
-    
+
     return filtered;
 }
 
-// バッチフィルタリング（複数ポイントを一度に処理、将来的な最適化用）
 /**
  * バッチフィルタリング（旧版、互換性のため保持）
  */
-function filterPointsBatch(points, centers, radius) {
+function filterPointsBatch(points, centers, radius, useSphere = true, useHorizontal = false) {
     const r2 = radius * radius;
     const filtered = [];
-    
+
     for (const point of points) {
         for (let i = 0; i < centers.length; i++) {
             const [cx, cy, cz] = centers[i];
             const dx = point.x - cx;
             const dy = point.y - cy;
             const dz = point.z - cz;
-            const dist2 = dx * dx + dy * dy + dz * dz;
-            if (dist2 <= r2) {
-                filtered.push(point);
-                break; // マッチしたら次のポイントへ
-            }
+            const dist2xy = dx * dx + dy * dy;
+            const dist2xyz = dist2xy + dz * dz;
+            if (useSphere && dist2xyz <= r2) { filtered.push(point); break; }
+            if (useHorizontal && dist2xy <= r2) { filtered.push(point); break; }
         }
     }
-    
+
     return filtered;
 }
 
@@ -405,10 +406,11 @@ function parseLASHeader(buffer) {
  * laz-perfを使ってLAZを解凍（ストリーミング処理対応）
  * ポイント単位で解凍し、即座にフィルタリングしてメモリ効率を最大化
  */
-async function decompressLAZWithLazPerfStreaming(arrayBuffer, header, centers, radius) {
+async function decompressLAZWithLazPerfStreaming(arrayBuffer, header, centers, radius, useSphere = true, useHorizontal = false) {
+    prepareFilteringCache(centers, radius, useSphere, useHorizontal);
     addLog('LAZ圧縮ファイルをストリーミング解凍しています...');
     updateProgress(25, 'LAZ解凍中');
-    
+
     const filteredPoints = [];
     
     // パフォーマンス測定
@@ -625,7 +627,8 @@ async function decompressLAZWithLazPerf(arrayBuffer, header) {
  * ストリーミング処理: 非圧縮LASをチャンクごとに読み込んで処理
  * 大きなファイル（300MB以上）をメモリ効率的に処理
  */
-async function processLASStreaming(file, header, centers, radius, chunkSizeMB = DEFAULT_CHUNK_SIZE_MB) {
+async function processLASStreaming(file, header, centers, radius, chunkSizeMB = DEFAULT_CHUNK_SIZE_MB, useSphere = true, useHorizontal = false) {
+    prepareFilteringCache(centers, radius, useSphere, useHorizontal);
     const filteredPoints = [];
     const pointRecordLength = header.pointRecordLength;
     const pointDataOffset = header.pointDataOffset;
@@ -918,10 +921,18 @@ async function processFiles() {
         
         const radius = parseFloat(radiusInput.value);
         const chunkSizeMB = parseInt(chunkSizeInput.value) || DEFAULT_CHUNK_SIZE_MB;
-        addLog(`設定: 半径=${radius}m, チャンクサイズ=${chunkSizeMB}MB`);
+        const useSphere = filterSphereInput ? filterSphereInput.checked : true;
+        const useHorizontal = filterHorizontalInput ? filterHorizontalInput.checked : false;
+        if (!useSphere && !useHorizontal) {
+            throw new Error('フィルタ種別を1つ以上選択してください（スフィアまたは水平投影）');
+        }
+        const filterLabels = [];
+        if (useSphere) filterLabels.push('スフィア');
+        if (useHorizontal) filterLabels.push('水平投影');
+        addLog(`設定: 半径=${radius}m, チャンクサイズ=${chunkSizeMB}MB, フィルタ: ${filterLabels.join(' + ')}`);
         
         // フィルタリングキャッシュを準備（パフォーマンス向上）
-        prepareFilteringCache(centers, radius);
+        prepareFilteringCache(centers, radius, useSphere, useHorizontal);
         
         // ファイルサイズチェック
         const fileSizeMB = lazFile.size / (1024 * 1024);
@@ -965,7 +976,7 @@ async function processFiles() {
         if (useStreaming && !header.isCompressed) {
             // 非圧縮LASのストリーミング処理
             addLog('ストリーミング処理を開始します...');
-            filteredPoints = await processLASStreaming(lazFile, header, centers, radius, chunkSizeMB);
+            filteredPoints = await processLASStreaming(lazFile, header, centers, radius, chunkSizeMB, useSphere, useHorizontal);
             processedCount = header.numPoints;
         } else if (header.isCompressed) {
             // LAZ圧縮ファイルの処理
@@ -977,7 +988,7 @@ async function processFiles() {
                 addLog(`入力ファイルサイズ: ${memoryMB}MB`);
                 
                 // 解凍とフィルタリングを同時に実行（解凍済みバッファを保持しない）
-                filteredPoints = await decompressLAZWithLazPerfStreaming(arrayBuffer, header, centers, radius);
+                filteredPoints = await decompressLAZWithLazPerfStreaming(arrayBuffer, header, centers, radius, useSphere, useHorizontal);
                 processedCount = header.numPoints;
                 
                 // 圧縮フラグをクリア（出力用）
@@ -999,7 +1010,7 @@ async function processFiles() {
                 let lastProgressUpdate = 0;
                 for (const { points, progress } of readUncompressedLAS(lasBuffer, header)) {
                     // バッチフィルタリング（高速化）
-                    const batchFiltered = filterPointsBatchFast(points, centers, radius);
+                    const batchFiltered = filterPointsBatchFast(points, centers, radius, useSphere, useHorizontal);
                     filteredPoints.push(...batchFiltered);
                     processedCount += points.length;
                     
@@ -1040,7 +1051,7 @@ async function processFiles() {
             let lastProgressUpdate = 0;
             for (const { points, progress } of readUncompressedLAS(lasBuffer, header)) {
                 // バッチフィルタリング（高速化）
-                const batchFiltered = filterPointsBatchFast(points, centers, radius);
+                const batchFiltered = filterPointsBatchFast(points, centers, radius, useSphere, useHorizontal);
                 filteredPoints.push(...batchFiltered);
                 processedCount += points.length;
                 
