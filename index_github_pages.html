@@ -267,7 +267,11 @@
                     </label>
                     <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal;">
                         <input type="radio" name="processMode" id="processModeBoundary" value="boundary">
-                        境界基準の座標系変換（全点を境界線基準の座標に変換・Z不変）
+                        立面図作成（境界の内側から外側を見通す座標系に変換）
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal;">
+                        <input type="radio" name="processMode" id="processModeSection" value="section">
+                        縦断・横断図作成（切抜幅でAB直線付近を抽出→座標変換）
                     </label>
                 </div>
             </div>
@@ -323,6 +327,20 @@
                         <option value="aLeftBRight">Aを左・Bを右（X'は A→B 方向）</option>
                         <option value="bLeftARight">Bを左・Aを右（X'は B→A 方向）</option>
                     </select>
+                </div>
+                <div class="setting-item" style="margin-top: 10px;">
+                    <label for="scaleY">座標変換後のYスケール（倍率）</label>
+                    <input type="number" id="scaleY" value="1" step="any" min="0.001">
+                    <small style="color: #666; font-size: 12px;">変換後のY値のみこの倍率で拡大縮小します。1のとき変更なし。</small>
+                </div>
+            </div>
+
+            <div id="sectionSettings" style="display: none;" class="settings">
+                <h4 style="margin-bottom: 10px;">切抜設定（縦断・横断図作成）</h4>
+                <div class="setting-item">
+                    <label for="clipWidth">切抜幅（±, m）</label>
+                    <input type="number" id="clipWidth" value="0.01" min="0" step="any">
+                    <small style="color: #666; font-size: 12px;">AB直線（無限長）に対する横方向距離 |Y'| がこの値以内の点だけを残します（デフォルト: ±0.01m）。</small>
                 </div>
             </div>
         </div>
