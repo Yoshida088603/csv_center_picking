@@ -149,10 +149,36 @@ csvInput.addEventListener('change', (e) => {
     }
 });
 
-processBtn.addEventListener('click', processFiles);
+processBtn.addEventListener('click', () => {
+    const mode = document.querySelector('input[name="processMode"]:checked')?.value || 'center';
+    if (mode === 'boundary') {
+        processBoundaryTransform();
+    } else {
+        processFiles();
+    }
+});
+
+// 処理モード切替でUI表示を更新
+document.querySelectorAll('input[name="processMode"]').forEach((radio) => {
+    radio.addEventListener('change', () => {
+        const mode = document.querySelector('input[name="processMode"]:checked')?.value || 'center';
+        const csvSection = document.getElementById('csvSection');
+        const boundarySection = document.getElementById('boundarySection');
+        const centerSettings = document.getElementById('centerSettings');
+        if (csvSection) csvSection.style.display = mode === 'boundary' ? 'none' : 'block';
+        if (boundarySection) boundarySection.style.display = mode === 'boundary' ? 'block' : 'none';
+        if (centerSettings) centerSettings.style.display = mode === 'boundary' ? 'none' : 'block';
+        checkFiles();
+    });
+});
 
 function checkFiles() {
-    processBtn.disabled = !(lazFile && csvFile && wasmReady);
+    const mode = document.querySelector('input[name="processMode"]:checked')?.value || 'center';
+    if (mode === 'boundary') {
+        processBtn.disabled = !(lazFile && wasmReady);
+    } else {
+        processBtn.disabled = !(lazFile && csvFile && wasmReady);
+    }
 }
 
 function formatFileSize(bytes) {
@@ -258,6 +284,63 @@ function buildUpdatedCSV(centers, labels) {
         return `${labels[i] || ''},${c[0]},${c[1]},${z}`;
     });
     return header + '\n' + rows.join('\n');
+}
+
+// ============================================================================
+// 境界基準の座標系変換（剛体回転＋平行移動、Z不変）
+// ============================================================================
+
+/**
+ * 境界線 A-B から X'軸ベクトル u と Y'軸ベクトル v を計算
+ * u = normalize(B-A) または normalize(A-B)（向き指定による）
+ * v = w × u（右手系）, w=(0,0,1) → v = (-uy, ux, 0)
+ * @param {number} xA - 点A X
+ * @param {number} yA - 点A Y
+ * @param {number} xB - 点B X
+ * @param {number} yB - 点B Y
+ * @param {boolean} aLeftBRight - true: Aを左・Bを右（X'はA→B）, false: Bを左・Aを右（X'はB→A）
+ * @returns {{ ux: number, uy: number, vx: number, vy: number } | null} 同一点の場合は null
+ */
+function computeBoundaryAxes(xA, yA, xB, yB, aLeftBRight) {
+    let dx = xB - xA;
+    let dy = yB - yA;
+    if (!aLeftBRight) {
+        dx = -dx;
+        dy = -dy;
+    }
+    const L = Math.sqrt(dx * dx + dy * dy);
+    if (L < 1e-10) return null;
+    const ux = dx / L;
+    const uy = dy / L;
+    // v = w × u, w=(0,0,1) → v = (-uy, ux, 0)
+    const vx = -uy;
+    const vy = ux;
+    return { ux, uy, vx, vy };
+}
+
+/**
+ * 1点を境界基準座標系に変換し、立面を平面に投影（デフォルト動作）
+ * 境界座標 (X', Y', Z') のうち 出力 (X''=X', Y''=Z, Z''=Y') でXY平面＝立面（境界方向×標高）
+ */
+function transformPointBoundary(x, y, z, xA, yA, ux, uy, vx, vy) {
+    const rx = x - xA;
+    const ry = y - yA;
+    const xp = rx * ux + ry * uy;
+    const yp = rx * vx + ry * vy;
+    return { x: xp, y: z, z: yp };
+}
+
+/**
+ * 点配列を破壊的に境界基準座標に変換（立面→平面投影、属性はそのまま）
+ */
+function transformPointsBoundary(points, xA, yA, ux, uy, vx, vy) {
+    for (let i = 0; i < points.length; i++) {
+        const p = points[i];
+        const t = transformPointBoundary(p.x, p.y, p.z, xA, yA, ux, uy, vx, vy);
+        p.x = t.x;
+        p.y = t.y;
+        p.z = t.z;
+    }
 }
 
 // ============================================================================
@@ -792,9 +875,150 @@ async function processLASStreaming(file, header, centers, radius, chunkSizeMB = 
     return filteredPoints;
 }
 
+/**
+ * 非圧縮LASをストリーミングで全点読み込み（フィルタなし・座標系変換用）
+ */
+async function processLASStreamingAllPoints(file, header, chunkSizeMB = DEFAULT_CHUNK_SIZE_MB) {
+    const allPoints = [];
+    const pointRecordLength = header.pointRecordLength;
+    const pointDataOffset = header.pointDataOffset;
+    const numPoints = header.numPoints;
+    const chunkSizeBytes = chunkSizeMB * 1024 * 1024;
+    const pointsPerChunk = Math.floor(chunkSizeBytes / pointRecordLength);
+    const hasRGB = RGB_FORMATS.includes(header.pointFormat);
+    let currentPointIndex = 0;
+    let currentOffset = pointDataOffset;
+
+    while (currentPointIndex < numPoints) {
+        const remainingPoints = numPoints - currentPointIndex;
+        const pointsInThisChunk = Math.min(pointsPerChunk, remainingPoints);
+        const chunkSize = pointsInThisChunk * pointRecordLength;
+        const chunkBlob = file.slice(currentOffset, currentOffset + chunkSize);
+        const chunkBuffer = await chunkBlob.arrayBuffer();
+        const view = new DataView(chunkBuffer);
+        let chunkOffset = 0;
+
+        for (let i = 0; i < pointsInThisChunk; i++) {
+            if (chunkOffset + 20 > chunkBuffer.byteLength) break;
+            const rawX = view.getInt32(chunkOffset, true);
+            const rawY = view.getInt32(chunkOffset + 4, true);
+            const rawZ = view.getInt32(chunkOffset + 8, true);
+            const x = rawX * header.scaleX + header.offsetX;
+            const y = rawY * header.scaleY + header.offsetY;
+            const z = rawZ * header.scaleZ + header.offsetZ;
+            const point = { x, y, z, intensity: view.getUint16(chunkOffset + 12, true) };
+            if (hasRGB && chunkOffset + 26 <= chunkBuffer.byteLength) {
+                point.red = view.getUint16(chunkOffset + 20, true);
+                point.green = view.getUint16(chunkOffset + 22, true);
+                point.blue = view.getUint16(chunkOffset + 24, true);
+            }
+            allPoints.push(point);
+            chunkOffset += pointRecordLength;
+            currentPointIndex++;
+        }
+        currentOffset += chunkSize;
+        if (currentPointIndex % PROGRESS_UPDATE_INTERVAL === 0 || currentPointIndex === numPoints) {
+            const progress = 20 + (currentPointIndex / numPoints) * 50;
+            updateProgress(progress, `読込: ${currentPointIndex.toLocaleString()}/${numPoints.toLocaleString()}点`);
+            addLog(`読込: ${currentPointIndex.toLocaleString()}点`);
+        }
+        await new Promise(resolve => setTimeout(resolve, 0));
+    }
+    return allPoints;
+}
+
+/**
+ * LAZを解凍しつつ全点を境界基準座標に変換（ポイント単位でメモリ節約）
+ */
+async function decompressLAZAndTransformBoundary(arrayBuffer, header, xA, yA, ux, uy, vx, vy) {
+    addLog('LAZを解凍し、境界基準座標に変換しています...');
+    updateProgress(25, 'LAZ解凍+変換中');
+    const transformedPoints = [];
+    const fileSize = arrayBuffer.byteLength;
+    const filePtr = LazPerf._malloc(fileSize);
+    const fileHeap = new Uint8Array(LazPerf.HEAPU8.buffer, filePtr, fileSize);
+    fileHeap.set(new Uint8Array(arrayBuffer));
+    const laszip = new LazPerf.LASZip();
+    laszip.open(filePtr, fileSize);
+    const pointCount = header.numPoints;
+    const pointRecordLength = header.pointRecordLength;
+    const pointPtr = LazPerf._malloc(pointRecordLength);
+    const pointHeap = new Uint8Array(LazPerf.HEAPU8.buffer, pointPtr, pointRecordLength);
+    // WASMヒープをその場でコピーしてから読む（EmscriptenでViewが更新されない問題を回避）
+    const pointCopy = new ArrayBuffer(pointRecordLength);
+    const copyView = new Uint8Array(pointCopy);
+    const view = new DataView(pointCopy);
+    const hasRGB = RGB_FORMATS.includes(header.pointFormat);
+
+    for (let i = 0; i < pointCount; i++) {
+        laszip.getPoint(pointPtr);
+        copyView.set(pointHeap);
+        const rawX = view.getInt32(0, true);
+        const rawY = view.getInt32(4, true);
+        const rawZ = view.getInt32(8, true);
+        const x = rawX * header.scaleX + header.offsetX;
+        const y = rawY * header.scaleY + header.offsetY;
+        const z = rawZ * header.scaleZ + header.offsetZ;
+        const t = transformPointBoundary(x, y, z, xA, yA, ux, uy, vx, vy);
+        const point = { x: t.x, y: t.y, z: t.z, intensity: view.getUint16(12, true) };
+        if (hasRGB && pointRecordLength >= 26) {
+            point.red = view.getUint16(20, true);
+            point.green = view.getUint16(22, true);
+            point.blue = view.getUint16(24, true);
+        }
+        transformedPoints.push(point);
+        if (i % PROGRESS_UPDATE_INTERVAL === 0 && i > 0) {
+            const progress = 25 + (i / pointCount) * 65;
+            updateProgress(progress, `LAZ解凍+変換: ${Math.floor((i / pointCount) * 100)}%`);
+            addLog(`処理済み: ${i.toLocaleString()}/${pointCount.toLocaleString()}点`);
+            await new Promise(resolve => setTimeout(resolve, 0));
+        }
+    }
+    laszip.delete();
+    LazPerf._free(filePtr);
+    LazPerf._free(pointPtr);
+    if (transformedPoints.length > 0) {
+        const p0 = transformedPoints[0];
+        addLog(`変換後 1点目: X'=${p0.x.toFixed(3)}, Y'=${p0.y.toFixed(3)}, Z'=${p0.z.toFixed(3)}`);
+    }
+    addLog(`LAZ解凍+変換完了: ${transformedPoints.length.toLocaleString()}点`);
+    return transformedPoints;
+}
+
 // ============================================================================
 // LASファイル処理関数
 // ============================================================================
+
+/**
+ * 非圧縮LASから全点を読み込む（フィルタなし・座標系変換用）
+ */
+function readAllPointsFromLASBuffer(buffer, header) {
+    const view = new DataView(buffer);
+    let offset = header.pointDataOffset;
+    const points = [];
+    const hasRGB = RGB_FORMATS.includes(header.pointFormat);
+    const pointRecordLength = header.pointRecordLength;
+    const numPoints = header.numPoints;
+
+    for (let i = 0; i < numPoints; i++) {
+        if (offset + pointRecordLength > buffer.byteLength) break;
+        const rawX = view.getInt32(offset, true);
+        const rawY = view.getInt32(offset + 4, true);
+        const rawZ = view.getInt32(offset + 8, true);
+        const x = rawX * header.scaleX + header.offsetX;
+        const y = rawY * header.scaleY + header.offsetY;
+        const z = rawZ * header.scaleZ + header.offsetZ;
+        const point = { x, y, z, intensity: view.getUint16(offset + 12, true) };
+        if (hasRGB && offset + 26 <= buffer.byteLength) {
+            point.red = view.getUint16(offset + 20, true);
+            point.green = view.getUint16(offset + 22, true);
+            point.blue = view.getUint16(offset + 24, true);
+        }
+        points.push(point);
+        offset += pointRecordLength;
+    }
+    return points;
+}
 
 /**
  * 非圧縮LAS読み込み（ジェネレータ）
@@ -939,6 +1163,101 @@ function createLASFile(points, header) {
     }
     
     return buffer;
+}
+
+// ============================================================================
+// 境界基準座標系変換のメイン処理
+// ============================================================================
+
+/**
+ * 境界基準の座標系変換を実行（全点変換・Z不変・LAS出力）
+ */
+async function processBoundaryTransform() {
+    try {
+        if (!wasmReady || !LazPerf) {
+            throw new Error('LAZ解凍エンジンが初期化されていません。ページをリロードしてください。');
+        }
+        const xA = parseFloat(document.getElementById('pointAX').value);
+        const yA = parseFloat(document.getElementById('pointAY').value);
+        const xB = parseFloat(document.getElementById('pointBX').value);
+        const yB = parseFloat(document.getElementById('pointBY').value);
+        const aLeftBRight = (document.getElementById('boundaryDirection').value === 'aLeftBRight');
+        if ([xA, yA, xB, yB].some(Number.isNaN)) {
+            throw new Error('境界点A・Bの座標をすべて数値で入力してください。');
+        }
+        const axes = computeBoundaryAxes(xA, yA, xB, yB, aLeftBRight);
+        if (!axes) {
+            throw new Error('点Aと点Bが同一です。異なる2点を指定してください。');
+        }
+        const { ux, uy, vx, vy } = axes;
+
+        processBtn.disabled = true;
+        progressSection.classList.add('active');
+        resultSection.classList.remove('active');
+        logDiv.innerHTML = '';
+        addLog('境界基準の座標系変換を開始します...');
+        updateProgress(0, '初期化中');
+
+        const headerBlob = lazFile.slice(0, Math.min(375, lazFile.size));
+        const headerBuffer = await headerBlob.arrayBuffer();
+        const header = parseLASHeader(headerBuffer);
+        if (header.pointDataOffset > 375) {
+            const fullHeaderBlob = lazFile.slice(0, header.pointDataOffset);
+            Object.assign(header, parseLASHeader(await fullHeaderBlob.arrayBuffer()));
+        }
+        addLog(`総点数: ${header.numPoints.toLocaleString()}点`);
+        addLog(`原点A=(${xA}, ${yA}), 境界B=(${xB}, ${yB}), 向き: ${aLeftBRight ? 'A→B（A左・B右）' : 'B→A（B左・A右）'}`);
+        updateProgress(10, 'ヘッダー解析完了');
+
+        let points = [];
+        const fileSizeMB = lazFile.size / (1024 * 1024);
+        const useStreaming = fileSizeMB > STREAMING_THRESHOLD_MB;
+        const chunkSizeMB = parseInt(chunkSizeInput?.value, 10) || DEFAULT_CHUNK_SIZE_MB;
+
+        if (header.isCompressed) {
+            const arrayBuffer = await lazFile.arrayBuffer();
+            points = await decompressLAZAndTransformBoundary(arrayBuffer, header, xA, yA, ux, uy, vx, vy);
+        } else if (useStreaming) {
+            addLog('非圧縮LASをストリーミングで全点読み込み中...');
+            points = await processLASStreamingAllPoints(lazFile, header, chunkSizeMB);
+            addLog('座標変換を適用しています...');
+            updateProgress(75, '座標変換中');
+            transformPointsBoundary(points, xA, yA, ux, uy, vx, vy);
+        } else {
+            addLog('LASファイルを読み込んでいます...');
+            const arrayBuffer = await lazFile.arrayBuffer();
+            updateProgress(20, '読込中');
+            points = readAllPointsFromLASBuffer(arrayBuffer, header);
+            addLog(`読込: ${points.length.toLocaleString()}点`);
+            addLog('座標変換を適用しています...');
+            updateProgress(70, '座標変換中');
+            transformPointsBoundary(points, xA, yA, ux, uy, vx, vy);
+        }
+
+        updateProgress(95, 'LAS出力生成中');
+        const outputLasBuffer = createLASFile(points, header);
+        updateProgress(100, '完了');
+
+        const blob = new Blob([outputLasBuffer], { type: 'application/octet-stream' });
+        const url = URL.createObjectURL(blob);
+        downloadBtn.href = url;
+        downloadBtn.download = 'output_boundary.las';
+        resultSection.classList.add('active');
+        resultText.innerHTML = `
+            境界基準の座標系変換が完了しました。<br>
+            出力点数: ${points.length.toLocaleString()}点（変更なし）<br>
+            ファイルサイズ: ${formatFileSize(outputLasBuffer.byteLength)}<br>
+            <small>出力XY=立面（X=境界方向, Y=標高）, Z=奥行。XY平面表示で立面図になります。</small>
+        `;
+        if (downloadCsvBtn) downloadCsvBtn.style.display = 'none';
+        addLog('✅ 境界基準の座標系変換が完了しました。');
+    } catch (err) {
+        console.error(err);
+        addLog(`❌ エラー: ${err.message}`);
+        alert(`エラー: ${err.message}`);
+    } finally {
+        processBtn.disabled = false;
+    }
 }
 
 // ============================================================================

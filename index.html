@@ -258,6 +258,20 @@
         </div>
 
         <div class="upload-section">
+            <div class="setting-item" style="margin-bottom: 20px;">
+                <label>処理モード</label>
+                <div style="display: flex; gap: 20px; flex-wrap: wrap; margin-top: 8px;">
+                    <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal;">
+                        <input type="radio" name="processMode" id="processModeCenter" value="center" checked>
+                        中心抽出（CSV座標周辺の点を抽出）
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal;">
+                        <input type="radio" name="processMode" id="processModeBoundary" value="boundary">
+                        境界基準の座標系変換（全点を境界線基準の座標に変換・Z不変）
+                    </label>
+                </div>
+            </div>
+
             <div class="file-input-wrapper">
                 <label for="lazFile" class="file-input-label" id="lazLabel">
                     <strong>📁 LAZ/LASファイルを選択</strong>
@@ -266,16 +280,45 @@
                 <input type="file" id="lazFile" accept=".laz,.las">
             </div>
 
-            <div class="file-input-wrapper">
+            <div class="file-input-wrapper" id="csvSection">
                 <label for="csvFile" class="file-input-label" id="csvLabel">
                     <strong>📊 CSVファイルを選択</strong>
                     <div class="file-info" id="csvInfo">形式: label,x,y,z</div>
                 </label>
                 <input type="file" id="csvFile" accept=".csv">
             </div>
+
+            <div id="boundarySection" style="display: none;" class="settings">
+                <h4 style="margin-bottom: 10px;">境界線の2点（平面直角座標）</h4>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                    <div class="setting-item">
+                        <label for="pointAX">点A X (m)</label>
+                        <input type="number" id="pointAX" step="any" placeholder="xA">
+                    </div>
+                    <div class="setting-item">
+                        <label for="pointAY">点A Y (m)</label>
+                        <input type="number" id="pointAY" step="any" placeholder="yA">
+                    </div>
+                    <div class="setting-item">
+                        <label for="pointBX">点B X (m)</label>
+                        <input type="number" id="pointBX" step="any" placeholder="xB">
+                    </div>
+                    <div class="setting-item">
+                        <label for="pointBY">点B Y (m)</label>
+                        <input type="number" id="pointBY" step="any" placeholder="yB">
+                    </div>
+                </div>
+                <div class="setting-item" style="margin-top: 10px;">
+                    <label for="boundaryDirection">X'軸の向き（どちらを「左」にするか）</label>
+                    <select id="boundaryDirection">
+                        <option value="aLeftBRight">Aを左・Bを右（X'は A→B 方向）</option>
+                        <option value="bLeftARight">Bを左・Aを右（X'は B→A 方向）</option>
+                    </select>
+                </div>
+            </div>
         </div>
 
-        <div class="settings">
+        <div class="settings" id="centerSettings">
             <div class="setting-item">
                 <label>フィルタ種別（どちらかまたは両方）</label>
                 <div style="display: flex; gap: 20px; flex-wrap: wrap; margin-top: 8px;">
