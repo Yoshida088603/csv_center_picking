@@ -289,8 +289,8 @@
             </div>
 
             <div id="boundarySection" style="display: none;" class="settings">
-                <h4 style="margin-bottom: 10px;">境界線の2点（平面直角座標）</h4>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                <h4 style="margin-bottom: 10px;">境界線の2点（XYZ座標・Zはスフィア中心にも使用）</h4>
+                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px;">
                     <div class="setting-item">
                         <label for="pointAX">点A X (m)</label>
                         <input type="number" id="pointAX" step="any" placeholder="xA">
@@ -300,6 +300,10 @@
                         <input type="number" id="pointAY" step="any" placeholder="yA">
                     </div>
                     <div class="setting-item">
+                        <label for="pointAZ">点A Z (m)</label>
+                        <input type="number" id="pointAZ" step="any" placeholder="zA（省略可）">
+                    </div>
+                    <div class="setting-item">
                         <label for="pointBX">点B X (m)</label>
                         <input type="number" id="pointBX" step="any" placeholder="xB">
                     </div>
@@ -307,7 +311,12 @@
                         <label for="pointBY">点B Y (m)</label>
                         <input type="number" id="pointBY" step="any" placeholder="yB">
                     </div>
+                    <div class="setting-item">
+                        <label for="pointBZ">点B Z (m)</label>
+                        <input type="number" id="pointBZ" step="any" placeholder="zB（省略可）">
+                    </div>
                 </div>
+                <p style="font-size: 12px; color: #666; margin-top: 5px;">A・B各点を中心に半径0.01m・約50点のスフィア点群（マゼンタ）を、座標変換前に追加します。</p>
                 <div class="setting-item" style="margin-top: 10px;">
                     <label for="boundaryDirection">X'軸の向き（どちらを「左」にするか）</label>
                     <select id="boundaryDirection">

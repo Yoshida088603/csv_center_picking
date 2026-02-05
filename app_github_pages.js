@@ -343,6 +343,45 @@ function transformPointsBoundary(points, xA, yA, ux, uy, vx, vy) {
     }
 }
 
+/** 黄金比（Fibonacci球面配置用） */
+const FIBONACCI_GOLDEN = (1 + Math.sqrt(5)) / 2;
+
+/**
+ * 指定中心・半径でスフィア表面にほぼ均等に配置した点群を生成（オリジナル座標系）
+ * @param {number} cx - 中心X
+ * @param {number} cy - 中心Y
+ * @param {number} cz - 中心Z
+ * @param {number} radius - 半径（デフォルト0.01）
+ * @param {number} numPoints - 点数（デフォルト50）
+ * @param {boolean} withRGB -  trueのとき red, green, blue を付与（マゼンタ）
+ * @returns {Object[]} { x, y, z, intensity, [red, green, blue] } の配列
+ */
+function generateSpherePointCloud(cx, cy, cz, radius = 0.01, numPoints = 50, withRGB = false) {
+    const points = [];
+    for (let i = 0; i < numPoints; i++) {
+        const theta = 2 * Math.PI * i / FIBONACCI_GOLDEN;
+        const phi = Math.acos(Math.max(-1, 1 - 2 * (i + 0.5) / numPoints));
+        const x = Math.cos(theta) * Math.sin(phi);
+        const y = Math.sin(theta) * Math.sin(phi);
+        const z = Math.cos(phi);
+        const p = {
+            x: cx + radius * x,
+            y: cy + radius * y,
+            z: cz + radius * z,
+            intensity: 0
+        };
+        if (withRGB) {
+            // LASのRGBは16bit(0-65535)が基本。ビューアが8bit表示に落とす際に上位8bitを見る場合、
+            // 255(0x00FF)は0に見えることがあるためフルレンジを使用する。
+            p.red = 65535;
+            p.green = 0;
+            p.blue = 65535;
+        }
+        points.push(p);
+    }
+    return points;
+}
+
 // ============================================================================
 // フィルタリング関数
 // ============================================================================
@@ -1179,11 +1218,13 @@ async function processBoundaryTransform() {
         }
         const xA = parseFloat(document.getElementById('pointAX').value);
         const yA = parseFloat(document.getElementById('pointAY').value);
+        const zA = parseFloat(document.getElementById('pointAZ').value) || 0;
         const xB = parseFloat(document.getElementById('pointBX').value);
         const yB = parseFloat(document.getElementById('pointBY').value);
+        const zB = parseFloat(document.getElementById('pointBZ').value) || 0;
         const aLeftBRight = (document.getElementById('boundaryDirection').value === 'aLeftBRight');
         if ([xA, yA, xB, yB].some(Number.isNaN)) {
-            throw new Error('境界点A・Bの座標をすべて数値で入力してください。');
+            throw new Error('境界点A・BのXY座標を数値で入力してください。Zは省略時0です。');
         }
         const axes = computeBoundaryAxes(xA, yA, xB, yB, aLeftBRight);
         if (!axes) {
@@ -1206,20 +1247,37 @@ async function processBoundaryTransform() {
             Object.assign(header, parseLASHeader(await fullHeaderBlob.arrayBuffer()));
         }
         addLog(`総点数: ${header.numPoints.toLocaleString()}点`);
-        addLog(`原点A=(${xA}, ${yA}), 境界B=(${xB}, ${yB}), 向き: ${aLeftBRight ? 'A→B（A左・B右）' : 'B→A（B左・A右）'}`);
+        addLog(`原点A=(${xA}, ${yA}, ${zA}), 境界B=(${xB}, ${yB}, ${zB}), 向き: ${aLeftBRight ? 'A→B（A左・B右）' : 'B→A（B左・A右）'}`);
         updateProgress(10, 'ヘッダー解析完了');
 
         let points = [];
         const fileSizeMB = lazFile.size / (1024 * 1024);
         const useStreaming = fileSizeMB > STREAMING_THRESHOLD_MB;
         const chunkSizeMB = parseInt(chunkSizeInput?.value, 10) || DEFAULT_CHUNK_SIZE_MB;
+        const SPHERE_RADIUS = 0.01;
+        const SPHERE_POINTS = 50;
 
         if (header.isCompressed) {
             const arrayBuffer = await lazFile.arrayBuffer();
             points = await decompressLAZAndTransformBoundary(arrayBuffer, header, xA, yA, ux, uy, vx, vy);
+            const sphereA = generateSpherePointCloud(xA, yA, zA, SPHERE_RADIUS, SPHERE_POINTS, true);
+            const sphereB = generateSpherePointCloud(xB, yB, zB, SPHERE_RADIUS, SPHERE_POINTS, true);
+            for (const p of sphereA) {
+                const t = transformPointBoundary(p.x, p.y, p.z, xA, yA, ux, uy, vx, vy);
+                points.push({ x: t.x, y: t.y, z: t.z, intensity: p.intensity, red: p.red, green: p.green, blue: p.blue });
+            }
+            for (const p of sphereB) {
+                const t = transformPointBoundary(p.x, p.y, p.z, xA, yA, ux, uy, vx, vy);
+                points.push({ x: t.x, y: t.y, z: t.z, intensity: p.intensity, red: p.red, green: p.green, blue: p.blue });
+            }
+            addLog(`スフィア点群を追加: A・B各${SPHERE_POINTS}点（半径${SPHERE_RADIUS}m・マゼンタ）、合計+${sphereA.length + sphereB.length}点`);
         } else if (useStreaming) {
             addLog('非圧縮LASをストリーミングで全点読み込み中...');
             points = await processLASStreamingAllPoints(lazFile, header, chunkSizeMB);
+            const sphereA = generateSpherePointCloud(xA, yA, zA, SPHERE_RADIUS, SPHERE_POINTS, true);
+            const sphereB = generateSpherePointCloud(xB, yB, zB, SPHERE_RADIUS, SPHERE_POINTS, true);
+            points.push(...sphereA, ...sphereB);
+            addLog(`スフィア点群を追加: A・B各${SPHERE_POINTS}点（半径${SPHERE_RADIUS}m・マゼンタ）、座標変換前に追加`);
             addLog('座標変換を適用しています...');
             updateProgress(75, '座標変換中');
             transformPointsBoundary(points, xA, yA, ux, uy, vx, vy);
@@ -1229,11 +1287,18 @@ async function processBoundaryTransform() {
             updateProgress(20, '読込中');
             points = readAllPointsFromLASBuffer(arrayBuffer, header);
             addLog(`読込: ${points.length.toLocaleString()}点`);
+            const sphereA = generateSpherePointCloud(xA, yA, zA, SPHERE_RADIUS, SPHERE_POINTS, true);
+            const sphereB = generateSpherePointCloud(xB, yB, zB, SPHERE_RADIUS, SPHERE_POINTS, true);
+            points.push(...sphereA, ...sphereB);
+            addLog(`スフィア点群を追加: A・B各${SPHERE_POINTS}点（半径${SPHERE_RADIUS}m・マゼンタ）、座標変換前に追加`);
             addLog('座標変換を適用しています...');
             updateProgress(70, '座標変換中');
             transformPointsBoundary(points, xA, yA, ux, uy, vx, vy);
         }
 
+        for (const p of points) {
+            if (!p.hasOwnProperty('red')) { p.red = 0; p.green = 0; p.blue = 0; }
+        }
         updateProgress(95, 'LAS出力生成中');
         const outputLasBuffer = createLASFile(points, header);
         updateProgress(100, '完了');
@@ -1245,7 +1310,7 @@ async function processBoundaryTransform() {
         resultSection.classList.add('active');
         resultText.innerHTML = `
             境界基準の座標系変換が完了しました。<br>
-            出力点数: ${points.length.toLocaleString()}点（変更なし）<br>
+            出力点数: ${points.length.toLocaleString()}点（元点群＋A・Bスフィア各50点）<br>
             ファイルサイズ: ${formatFileSize(outputLasBuffer.byteLength)}<br>
             <small>出力XY=立面（X=境界方向, Y=標高）, Z=奥行。XY平面表示で立面図になります。</small>
         `;
