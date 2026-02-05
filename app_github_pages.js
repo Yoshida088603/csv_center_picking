@@ -1458,7 +1458,7 @@ async function processBoundaryTransform() {
         const scaleYVal = (Number.isFinite(scaleYInput) && scaleYInput > 0) ? scaleYInput : 1;
         if (scaleYVal !== 1) {
             scaleYPoints(points, scaleYVal);
-            addLog(`Yスケール適用: ${scaleYVal}倍`);
+            addLog(`標高の強調適用: ${scaleYVal}倍`);
         }
         updateProgress(95, 'LAS出力生成中');
         const outputLasBuffer = createLASFile(points, header);
@@ -1613,7 +1613,7 @@ async function processSectionMode() {
         const scaleYVal = (Number.isFinite(scaleYInput) && scaleYInput > 0) ? scaleYInput : 1;
         if (scaleYVal !== 1) {
             scaleYPoints(outPoints, scaleYVal);
-            addLog(`Yスケール適用: ${scaleYVal}倍`);
+            addLog(`標高の強調適用: ${scaleYVal}倍`);
         }
 
         updateProgress(95, 'LAS出力生成中');
