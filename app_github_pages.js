@@ -592,6 +592,16 @@ function parseLASHeader(buffer) {
     const offsetY = view.getFloat64(163, true);
     const offsetZ = view.getFloat64(171, true);
     
+    let minX = 0, maxX = 0, minY = 0, maxY = 0, minZ = 0, maxZ = 0;
+    if (buffer.byteLength >= 227) {
+        maxX = view.getFloat64(179, true);
+        minX = view.getFloat64(187, true);
+        maxY = view.getFloat64(195, true);
+        minY = view.getFloat64(203, true);
+        maxZ = view.getFloat64(211, true);
+        minZ = view.getFloat64(219, true);
+    }
+    
     return {
         versionMajor,
         versionMinor,
@@ -606,8 +616,32 @@ function parseLASHeader(buffer) {
         scaleZ,
         offsetX,
         offsetY,
-        offsetZ
+        offsetZ,
+        minX,
+        maxX,
+        minY,
+        maxY,
+        minZ,
+        maxZ
     };
+}
+
+/** 点(px,py)からXY範囲ボックス（minX,maxX,minY,maxY）までの最短距離。内側なら0 */
+function distanceFromPointToBox(px, py, minX, maxX, minY, maxY) {
+    const nx = Math.max(minX, Math.min(maxX, px));
+    const ny = Math.max(minY, Math.min(maxY, py));
+    return Math.sqrt((px - nx) ** 2 + (py - ny) ** 2);
+}
+
+/** ヘッダーの点群範囲と入力点A・Bの距離をログ表示し、離れていれば警告（閾値m） */
+function logAndWarnDistanceToExtent(header, xA, yA, xB, yB, warnThresholdM = 50) {
+    if (header.minX == null || !Number.isFinite(header.minX)) return;
+    const dA = distanceFromPointToBox(xA, yA, header.minX, header.maxX, header.minY, header.maxY);
+    const dB = distanceFromPointToBox(xB, yB, header.minX, header.maxX, header.minY, header.maxY);
+    addLog(`点群範囲との距離（ヘッダーより）: 点A ${dA.toFixed(2)}m, 点B ${dB.toFixed(2)}m`);
+    if (dA > warnThresholdM || dB > warnThresholdM) {
+        addLog(`⚠️ 警告: 入力点が点群範囲から${warnThresholdM}m以上離れています。座標の取り違いや、XYが反転している可能性がないか確認してください。`);
+    }
 }
 
 /**
@@ -1403,6 +1437,7 @@ async function processBoundaryTransform() {
         }
         addLog(`総点数: ${header.numPoints.toLocaleString()}点`);
         addLog(`原点A=(${xA}, ${yA}, ${zA}), 境界B=(${xB}, ${yB}, ${zB}), 向き: ${aLeftBRight ? 'A→B（A左・B右）' : 'B→A（B左・A右）'}`);
+        logAndWarnDistanceToExtent(header, xA, yA, xB, yB);
         updateProgress(10, 'ヘッダー解析完了');
 
         let points = [];
@@ -1538,6 +1573,7 @@ async function processSectionMode() {
             Object.assign(header, parseLASHeader(await fullHeaderBlob.arrayBuffer()));
         }
         addLog(`総点数: ${header.numPoints.toLocaleString()}点`);
+        logAndWarnDistanceToExtent(header, xA, yA, xB, yB);
         updateProgress(10, 'ヘッダー解析完了');
 
         const fileSizeMB = lazFile.size / (1024 * 1024);
