@@ -472,7 +472,9 @@
                 <div style="display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap;">
                     <button type="button" class="process-btn" id="copcSearchBtn" style="max-width: 200px;">COPC検索</button>
                     <button type="button" class="process-btn" id="copcDownloadBtn" style="max-width: 220px; background: #28a745;" disabled>LAZダウンロード</button>
+                    <button type="button" class="process-btn" id="copcPotreeBtn" style="max-width: 180px; background: #0d6efd;" disabled>Potreeで表示</button>
                 </div>
+                <p style="font-size: 12px; color: #666; margin-top: 6px;">Potreeで表示は COPC 形式に対応。プロキシ利用時は同一サーバーのビューア（/potree-copc-viewer/）を開くため点群が表示されます。必ず「プロキシ経由で検索」にチェックを入れ、<code>python scripts/serve_with_3ddb_proxy.py</code> で起動した画面から開いてください。</p>
                 <div id="copcMessage" class="status" style="margin-top: 12px; display: none;"></div>
                 <div id="copcCandidateList" style="margin-top: 12px; display: none;">
                     <label class="setting-item">候補（選択してLAZダウンロード）</label>

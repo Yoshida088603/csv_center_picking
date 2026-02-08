@@ -201,9 +201,10 @@ processBtn.addEventListener('click', () => {
     return processFiles();
 });
 
-// 3DDB COPC: 入力方法切替・検索・ダウンロード
+// 3DDB COPC: 入力方法切替・検索・ダウンロード・Potree表示
 const copcSearchBtn = document.getElementById('copcSearchBtn');
 const copcDownloadBtn = document.getElementById('copcDownloadBtn');
+const copcPotreeBtn = document.getElementById('copcPotreeBtn');
 const copcPointInputs = document.getElementById('copcPointInputs');
 const copcSimInput = document.getElementById('copcSimInput');
 const copcSimFile = document.getElementById('copcSimFile');
@@ -273,6 +274,7 @@ if (copcSearchBtn) {
             if (candidates.length === 0) {
                 showCopcMessage('該当COPCなし');
                 if (copcDownloadBtn) copcDownloadBtn.disabled = true;
+                if (copcPotreeBtn) copcPotreeBtn.disabled = true;
                 return;
             }
             showCopcMessage(`候補 ${candidates.length} 件見つかりました。選択してLAZダウンロードを押してください。`);
@@ -293,10 +295,12 @@ if (copcSearchBtn) {
             });
             listEl.style.display = 'block';
             if (copcDownloadBtn) copcDownloadBtn.disabled = false;
+            if (copcPotreeBtn) copcPotreeBtn.disabled = false;
         } catch (err) {
             console.error('COPC search error', err);
             showCopcMessage(`エラー: ${err.message}`, true);
             if (copcDownloadBtn) copcDownloadBtn.disabled = true;
+            if (copcPotreeBtn) copcPotreeBtn.disabled = true;
         } finally {
             copcSearchBtn.disabled = false;
         }
@@ -319,6 +323,36 @@ if (copcDownloadBtn) {
             console.error('Download error', err);
             showCopcMessage(`ダウンロードに失敗しました: ${err.message}`, true);
         }
+    });
+}
+if (copcPotreeBtn) {
+    copcPotreeBtn.addEventListener('click', () => {
+        const selected = document.querySelector('input[name="copcCandidate"]:checked');
+        const idx = selected ? parseInt(selected.value, 10) : 0;
+        const c = copcCandidates[idx];
+        if (!c) {
+            showCopcMessage('候補を選択してからPotreeで表示を実行してください。', true);
+            return;
+        }
+        let directUrl;
+        if (c.external_link && /\.(copc\.laz|laz)$/i.test(c.external_link)) {
+            directUrl = c.external_link;
+        } else {
+            directUrl = `https://gsrt.digiarc.aist.go.jp/3ddb-pds/copc/${c.reg_id}.copc.laz`;
+        }
+        const useProxy = document.getElementById('copcUseProxy')?.checked === true;
+        const rParam = useProxy
+            ? (window.location.origin + '/api/3ddb_proxy?url=' + encodeURIComponent(directUrl))
+            : directUrl;
+        // プロキシ利用時は同一オリジンのビューアを開く（HTTPS→httpのMixed Contentを避ける）
+        const viewerBase = useProxy
+            ? (window.location.origin + '/potree-copc-viewer/')
+            : POTREE_COPC_VIEWER_BASE;
+        const url = viewerBase + '?r=' + encodeURIComponent(rParam);
+        window.open(url, '_blank', 'noopener');
+        showCopcMessage(useProxy
+            ? 'Potreeビューアを別タブで開きました（同一オリジン・プロキシ経由でCOPC取得）。'
+            : 'Potreeビューアを別タブで開きました。3ddb-pds の CORS で表示できない場合は、プロキシ経由で検索にチェックを入れてから再度お試しください。');
     });
 }
 
@@ -424,6 +458,7 @@ function formatFileSize(bytes) {
 // ============================================================================
 
 const COPC_3DDB_DEFAULT_BASE = 'https://gsrt.digiarc.aist.go.jp/3ddb_demo';
+const POTREE_COPC_VIEWER_BASE = 'https://Yoshida088603.github.io/potree-copc-viewer/';
 let copcCandidates = [];
 
 /**
