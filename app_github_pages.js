@@ -139,13 +139,13 @@ const simInfo = document.getElementById('simInfo');
 // laz-perf WASMの初期化
 initLazPerf();
 
-// ファイル選択イベント
+// ファイル選択イベント（ファイルピッカーでもモードを自動選択）
 lazInput.addEventListener('change', (e) => {
     lazFile = e.target.files[0];
     if (lazFile) {
         lazLabel.classList.add('has-file');
         lazInfo.textContent = `${lazFile.name} (${formatFileSize(lazFile.size)})`;
-        checkFiles();
+        updateModeFromFiles();
     }
 });
 
@@ -154,7 +154,7 @@ csvInput.addEventListener('change', (e) => {
     if (csvFile) {
         csvLabel.classList.add('has-file');
         csvInfo.textContent = `${csvFile.name} (${formatFileSize(csvFile.size)})`;
-        checkFiles();
+        updateModeFromFiles();
     }
 });
 
@@ -164,8 +164,31 @@ if (simInput) {
         if (simFile) {
             if (simLabel) simLabel.classList.add('has-file');
             if (simInfo) simInfo.textContent = `${simFile.name} (${formatFileSize(simFile.size)})`;
-            checkFiles();
+            updateModeFromFiles();
         }
+    });
+}
+
+// ドラッグ＆ドロップ（ファイル種類に応じてラジオを自動選択）
+const fileDropZone = document.getElementById('fileDropZone');
+if (fileDropZone) {
+    fileDropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        e.dataTransfer.dropEffect = 'copy';
+        fileDropZone.classList.add('drag-over');
+    });
+    fileDropZone.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (!fileDropZone.contains(e.relatedTarget)) fileDropZone.classList.remove('drag-over');
+    });
+    fileDropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        fileDropZone.classList.remove('drag-over');
+        const files = e.dataTransfer.files;
+        if (files && files.length) applyFilesFromDrop(files);
     });
 }
 
@@ -186,12 +209,14 @@ document.querySelectorAll('input[name="processMode"]').forEach((radio) => {
         const centerSettings = document.getElementById('centerSettings');
         const sectionSettings = document.getElementById('sectionSettings');
         const simSection = document.getElementById('simSection');
+        const polygonSettings = document.getElementById('polygonSettings');
         const isCenter = mode === 'center';
         const isBoundaryLike = mode === 'boundary' || mode === 'section';
         const isPolygon = mode === 'polygon';
         if (csvSection) csvSection.style.display = isCenter ? 'block' : 'none';
         if (boundarySection) boundarySection.style.display = isBoundaryLike ? 'block' : 'none';
         if (simSection) simSection.style.display = isPolygon ? 'block' : 'none';
+        if (polygonSettings) polygonSettings.style.display = isPolygon ? 'block' : 'none';
         if (centerSettings) centerSettings.style.display = isCenter ? 'block' : 'none';
         if (sectionSettings) sectionSettings.style.display = mode === 'section' ? 'block' : 'none';
         checkFiles();
@@ -207,6 +232,54 @@ function checkFiles() {
     } else {
         processBtn.disabled = !(lazFile && csvFile && wasmReady);
     }
+}
+
+/**
+ * 現在セットされているファイル（lazFile, csvFile, simFile）に応じて処理モードのラジオを動的に選択する。
+ * 優先: 点群+SIM → ポリゴン境界, 点群+CSV → 中心抽出, 点群のみ → 立面図。最後に checkFiles() を呼ぶ。
+ */
+function updateModeFromFiles() {
+    const radioCenter = document.getElementById('processModeCenter');
+    const radioBoundary = document.getElementById('processModeBoundary');
+    const radioPolygon = document.getElementById('processModePolygon');
+    if (!radioCenter || !radioBoundary || !radioPolygon) return;
+    if (lazFile && simFile) {
+        radioPolygon.checked = true;
+        radioPolygon.dispatchEvent(new Event('change', { bubbles: true }));
+    } else if (lazFile && csvFile) {
+        radioCenter.checked = true;
+        radioCenter.dispatchEvent(new Event('change', { bubbles: true }));
+    } else if (lazFile) {
+        radioBoundary.checked = true;
+        radioBoundary.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+    checkFiles();
+}
+
+/**
+ * ドロップされた FileList を種類ごとに振り分け、lazFile/csvFile/simFile とラベルを更新して updateModeFromFiles を呼ぶ。
+ */
+function applyFilesFromDrop(files) {
+    if (!files || !files.length) return;
+    for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const name = (file.name || '').toLowerCase();
+        const ext = name.includes('.') ? name.slice(name.lastIndexOf('.')) : '';
+        if (ext === '.laz' || ext === '.las') {
+            lazFile = file;
+            lazLabel.classList.add('has-file');
+            lazInfo.textContent = `${file.name} (${formatFileSize(file.size)})`;
+        } else if (ext === '.csv') {
+            csvFile = file;
+            csvLabel.classList.add('has-file');
+            csvInfo.textContent = `${file.name} (${formatFileSize(file.size)})`;
+        } else if (ext === '.sim') {
+            simFile = file;
+            if (simLabel) simLabel.classList.add('has-file');
+            if (simInfo) simInfo.textContent = `${file.name} (${formatFileSize(file.size)})`;
+        }
+    }
+    updateModeFromFiles();
 }
 
 function formatFileSize(bytes) {
@@ -1786,8 +1859,14 @@ async function processPolygonBoundary() {
         }
         addLog(`前段: 中心ポリゴン ${centerPoly.length} 頂点`);
 
-        const innerPoly = offsetPolygon(centerPoly, -0.005);
-        const outerPoly = offsetPolygon(centerPoly, 0.005);
+        const lineWidthInput = document.getElementById('polygonLineWidth');
+        const lineWidthM = (lineWidthInput && Number.isFinite(parseFloat(lineWidthInput.value)) && parseFloat(lineWidthInput.value) > 0)
+            ? parseFloat(lineWidthInput.value) : 0.01;
+        const halfWidth = lineWidthM / 2;
+        addLog(`線幅: ${lineWidthM}m（内側・外側各 ${halfWidth}m オフセット）`);
+
+        const innerPoly = offsetPolygon(centerPoly, -halfWidth);
+        const outerPoly = offsetPolygon(centerPoly, halfWidth);
         if (innerPoly.length < 3) addLog('⚠️ 内側オフセットポリゴンが3頂点未満です');
         if (outerPoly.length < 3) addLog('⚠️ 外側オフセットポリゴンが3頂点未満です');
         addLog(`内側オフセット: ${innerPoly.length} 頂点, 外側オフセット: ${outerPoly.length} 頂点`);

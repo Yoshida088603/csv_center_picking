@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>LAZ Center Picking - GitHub Pages版（LAZ完全対応）</title>
+    <title>よく使う点群処理 - GitHub Pages版</title>
     <style>
         * {
             margin: 0;
@@ -89,6 +89,40 @@
 
         input[type="file"] {
             display: none;
+        }
+
+        .file-drop-zone {
+            border: 2px dashed transparent;
+            border-radius: 10px;
+            padding: 8px 0;
+            transition: border-color 0.2s, background 0.2s;
+        }
+
+        .file-drop-zone.drag-over {
+            border-color: #667eea;
+            background: #e7f5ff;
+        }
+
+        .process-mode-section {
+            background: #f0f4ff;
+            border: 1px solid #667eea;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 24px;
+        }
+
+        .process-mode-label {
+            display: block;
+            font-size: 1.15em;
+            font-weight: 700;
+            color: #333;
+            margin-bottom: 12px;
+        }
+
+        .process-mode-radios {
+            display: flex;
+            gap: 20px;
+            flex-wrap: wrap;
         }
 
         .settings {
@@ -241,26 +275,17 @@
 </head>
 <body>
     <div class="container">
-        <h1>🎯 LAZ Center Picking</h1>
-        <p class="subtitle">CSVに記載された座標周辺の点群を抽出するツール（GitHub Pages版）</p>
+        <h1>🎯 よく使う点群処理</h1>
+        <p class="subtitle">数学座標系の点群を処理するツール群（GitHub Pages版）</p>
         
         <div class="status" id="status">
             ⏳ LAZ解凍エンジンを初期化しています...
         </div>
 
-        <div class="warning-box" style="margin-bottom: 20px; background: #e7f5ff; border: 1px solid #4a90e2; border-radius: 10px; padding: 15px;">
-            <h3>📊 ファイルサイズについて</h3>
-            <p>
-                <strong>✅ 1GB以上のファイルも処理可能です</strong><br>
-                ストリーミング処理により、大きなファイルでもメモリ効率的に処理できます。<br>
-                チャンクサイズを大きく設定すると、処理速度が向上します（推奨: 100-500MB）。
-            </p>
-        </div>
-
         <div class="upload-section">
-            <div class="setting-item" style="margin-bottom: 20px;">
-                <label>処理モード</label>
-                <div style="display: flex; gap: 20px; flex-wrap: wrap; margin-top: 8px;">
+            <div class="process-mode-section">
+                <label class="process-mode-label">処理モード</label>
+                <div class="process-mode-radios">
                     <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal;">
                         <input type="radio" name="processMode" id="processModeCenter" value="center" checked>
                         中心抽出（CSV座標周辺の点を抽出）
@@ -271,41 +296,43 @@
                     </label>
                     <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal;">
                         <input type="radio" name="processMode" id="processModeSection" value="section">
-                        縦断・横断図作成（切抜幅でAB直線付近を抽出→座標変換）
+                        縦断・横断図作成（AB直線付近を抽出→座標変換）
                     </label>
                     <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal;">
                         <input type="radio" name="processMode" id="processModePolygon" value="polygon">
-                        ポリゴン境界（SIMA）で幅1cmライン描画
+                        境界ポリゴン（SIMA形式）を点群上に可視化
                     </label>
                 </div>
             </div>
 
-            <div class="file-input-wrapper">
-                <label for="lazFile" class="file-input-label" id="lazLabel">
-                    <strong>📁 LAZ/LASファイルを選択</strong>
-                    <div class="file-info" id="lazInfo">✅ LAZ圧縮およびLAS非圧縮の両方に完全対応（ブラウザ内処理）</div>
-                </label>
-                <input type="file" id="lazFile" accept=".laz,.las">
-            </div>
+            <div id="fileDropZone" class="file-drop-zone">
+                <div class="file-input-wrapper">
+                    <label for="lazFile" class="file-input-label" id="lazLabel">
+                        <strong>📁 LAZ/LASファイルを選択</strong>
+                        <div class="file-info" id="lazInfo">✅ LAZ圧縮およびLAS非圧縮の両方に完全対応（ブラウザ内処理）</div>
+                    </label>
+                    <input type="file" id="lazFile" accept=".laz,.las">
+                </div>
 
-            <div class="file-input-wrapper" id="csvSection">
-                <label for="csvFile" class="file-input-label" id="csvLabel">
-                    <strong>📊 CSVファイルを選択</strong>
-                    <div class="file-info" id="csvInfo">形式: label,x,y,z</div>
-                </label>
-                <input type="file" id="csvFile" accept=".csv">
-            </div>
+                <div class="file-input-wrapper" id="csvSection">
+                    <label for="csvFile" class="file-input-label" id="csvLabel">
+                        <strong>📊 CSVファイルを選択</strong>
+                        <div class="file-info" id="csvInfo">形式: label,x,y,z</div>
+                    </label>
+                    <input type="file" id="csvFile" accept=".csv">
+                </div>
 
-            <div class="file-input-wrapper" id="simSection" style="display: none;">
-                <label for="simFile" class="file-input-label" id="simLabel">
-                    <strong>📐 SIMA形式（.sim）境界ポリゴンを選択</strong>
-                    <div class="file-info" id="simInfo">1閉多角形。前段は参照元(dxf4segmentation)のロジックをそのまま使用</div>
-                </label>
-                <input type="file" id="simFile" accept=".sim">
+                <div class="file-input-wrapper" id="simSection" style="display: none;">
+                    <label for="simFile" class="file-input-label" id="simLabel">
+                        <strong>📐 SIMA形式（.sim）境界ポリゴンを選択</strong>
+                        <div class="file-info" id="simInfo">測量座標系で作成した画地SIMAを選択</div>
+                    </label>
+                    <input type="file" id="simFile" accept=".sim">
+                    </div>
             </div>
 
             <div id="boundarySection" style="display: none;" class="settings">
-                <h4 style="margin-bottom: 10px;">数学座標系・測量座標系の整合性に注意して境界線の2点の座標値を入力してください（XYZ座標・Zはスフィア中心にも使用）</h4>
+                <h4 style="margin-bottom: 10px;">測量座標系で２点の座標値を入力してください（XYZ座標・Zはスフィア中心に使用）</h4>
                 <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px;">
                     <div class="setting-item">
                         <label for="pointAX">点A X (m)</label>
@@ -353,6 +380,15 @@
                     <label for="clipWidth">切抜幅（±, m）</label>
                     <input type="number" id="clipWidth" value="0.01" min="0" step="any">
                     <small style="color: #666; font-size: 12px;">AB直線（無限長）に対する横方向距離 |Y'| がこの値以内の点だけを残します（デフォルト: ±0.01m）。</small>
+                </div>
+            </div>
+
+            <div id="polygonSettings" style="display: none;" class="settings">
+                <h4 style="margin-bottom: 10px;">境界ポリゴン（SIMA）の線幅</h4>
+                <div class="setting-item">
+                    <label for="polygonLineWidth">線幅 (m)</label>
+                    <input type="number" id="polygonLineWidth" value="0.01" min="0.001" step="any">
+                    <small style="color: #666; font-size: 12px;">境界に沿った帯の幅。デフォルト 0.01 = 1cm。内側・外側に半分ずつオフセットします。</small>
                 </div>
             </div>
         </div>
@@ -404,7 +440,7 @@
         </div>
 
         <div class="github-badge">
-            🌐 GitHub Pages対応 - サーバー不要で完全動作
+            🌐 GitHub Pages対応 - 完全フロントエンド処理
         </div>
     </div>
 
