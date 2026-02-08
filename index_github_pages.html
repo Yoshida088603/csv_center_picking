@@ -273,6 +273,10 @@
                         <input type="radio" name="processMode" id="processModeSection" value="section">
                         縦断・横断図作成（切抜幅でAB直線付近を抽出→座標変換）
                     </label>
+                    <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal;">
+                        <input type="radio" name="processMode" id="processModePolygon" value="polygon">
+                        ポリゴン境界（SIMA）で幅1cmライン描画
+                    </label>
                 </div>
             </div>
 
@@ -290,6 +294,14 @@
                     <div class="file-info" id="csvInfo">形式: label,x,y,z</div>
                 </label>
                 <input type="file" id="csvFile" accept=".csv">
+            </div>
+
+            <div class="file-input-wrapper" id="simSection" style="display: none;">
+                <label for="simFile" class="file-input-label" id="simLabel">
+                    <strong>📐 SIMA形式（.sim）境界ポリゴンを選択</strong>
+                    <div class="file-info" id="simInfo">1閉多角形。前段は参照元(dxf4segmentation)のロジックをそのまま使用</div>
+                </label>
+                <input type="file" id="simFile" accept=".sim">
             </div>
 
             <div id="boundarySection" style="display: none;" class="settings">
@@ -396,6 +408,7 @@
         </div>
     </div>
 
+    <script src="https://cdn.jsdelivr.net/npm/clipper-lib@6.4.2/clipper.js"></script>
     <script type="module" src="app_github_pages.js"></script>
 </body>
 </html>

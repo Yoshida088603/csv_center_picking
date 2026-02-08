@@ -15,12 +15,18 @@ const DEFAULT_CHUNK_SIZE_MB = 100; // デフォルトチャンクサイズ（MB�
 // RGB情報を含むLAS Point Format
 const RGB_FORMATS = [2, 3, 5, 7, 8, 10];
 
+// ポリゴン境界モード: Classification（内側・帯・外側）
+const CLASS_INSIDE = 1;
+const CLASS_BAND = 2;
+const CLASS_OUTSIDE = 3;
+
 // ============================================================================
 // グローバル変数
 // ============================================================================
 
 let lazFile = null;
 let csvFile = null;
+let simFile = null;
 let centers = [];
 let csvLabels = [];
 let csvHasZ = false;
@@ -122,6 +128,9 @@ const filterSphereInput = document.getElementById('filterSphere');
 const filterHorizontalInput = document.getElementById('filterHorizontal');
 const statusDiv = document.getElementById('status');
 const downloadCsvBtn = document.getElementById('downloadCsvBtn');
+const simInput = document.getElementById('simFile');
+const simLabel = document.getElementById('simLabel');
+const simInfo = document.getElementById('simInfo');
 
 // ============================================================================
 // イベントハンドラと初期化
@@ -149,10 +158,22 @@ csvInput.addEventListener('change', (e) => {
     }
 });
 
+if (simInput) {
+    simInput.addEventListener('change', (e) => {
+        simFile = e.target.files[0];
+        if (simFile) {
+            if (simLabel) simLabel.classList.add('has-file');
+            if (simInfo) simInfo.textContent = `${simFile.name} (${formatFileSize(simFile.size)})`;
+            checkFiles();
+        }
+    });
+}
+
 processBtn.addEventListener('click', () => {
     const mode = document.querySelector('input[name="processMode"]:checked')?.value || 'center';
     if (mode === 'boundary') return processBoundaryTransform();
     if (mode === 'section') return processSectionMode();
+    if (mode === 'polygon') return processPolygonBoundary();
     return processFiles();
 });
 
@@ -164,10 +185,13 @@ document.querySelectorAll('input[name="processMode"]').forEach((radio) => {
         const boundarySection = document.getElementById('boundarySection');
         const centerSettings = document.getElementById('centerSettings');
         const sectionSettings = document.getElementById('sectionSettings');
+        const simSection = document.getElementById('simSection');
         const isCenter = mode === 'center';
         const isBoundaryLike = mode === 'boundary' || mode === 'section';
+        const isPolygon = mode === 'polygon';
         if (csvSection) csvSection.style.display = isCenter ? 'block' : 'none';
         if (boundarySection) boundarySection.style.display = isBoundaryLike ? 'block' : 'none';
+        if (simSection) simSection.style.display = isPolygon ? 'block' : 'none';
         if (centerSettings) centerSettings.style.display = isCenter ? 'block' : 'none';
         if (sectionSettings) sectionSettings.style.display = mode === 'section' ? 'block' : 'none';
         checkFiles();
@@ -178,6 +202,8 @@ function checkFiles() {
     const mode = document.querySelector('input[name="processMode"]:checked')?.value || 'center';
     if (mode === 'boundary' || mode === 'section') {
         processBtn.disabled = !(lazFile && wasmReady);
+    } else if (mode === 'polygon') {
+        processBtn.disabled = !(lazFile && simFile && wasmReady);
     } else {
         processBtn.disabled = !(lazFile && csvFile && wasmReady);
     }
@@ -286,6 +312,57 @@ function buildUpdatedCSV(centers, labels) {
         return `${labels[i] || ''},${c[0]},${c[1]},${z}`;
     });
     return header + '\n' + rows.join('\n');
+}
+
+// ============================================================================
+// SIMA・ポリゴン境界（参照元 dxf4segmentation をそのまま流用）
+// ============================================================================
+
+/** .sim テキストをパースし、ポリゴン座標列 [[x,y],...]（測量座標系）を返す。参照元 index.html 20–36行目そのまま。 */
+function parseSim(text) {
+    const points = {};
+    const order = [];
+    text.split(/\r?\n/).forEach(line => {
+        const cols = line.split(',').map(s => s.trim());
+        if (cols[0] === 'A01') {
+            points[cols[2]] = [parseFloat(cols[3]), parseFloat(cols[4])];
+        }
+        if (cols[0] === 'B01') {
+            order.push(cols[2]);
+        }
+    });
+    return order.map(pt => points[pt]).filter(Boolean);
+}
+
+/** オフセット量は5mm=0.005m。参照元 index.html 56–64行目そのまま。Clipper.js は HTML で CDN 読み込み。 */
+function offsetPolygon(polygon, offset_m) {
+    const ClipperLib = globalThis.ClipperLib || window.ClipperLib;
+    if (!ClipperLib) throw new Error('Clipper.js が読み込まれていません');
+    const scale = 1000000;
+    const subj = polygon.map(([x, y]) => ({ X: Math.round(x * scale), Y: Math.round(y * scale) }));
+    const co = new ClipperLib.ClipperOffset();
+    co.AddPath(subj, ClipperLib.JoinType.jtMiter, ClipperLib.EndType.etClosedPolygon);
+    const solution = [];
+    co.Execute(solution, offset_m * scale);
+    return solution.length > 0 ? solution[0].map(pt => [pt.X / scale, pt.Y / scale]) : [];
+}
+
+/** 測量座標系ポリゴンを数学座標系に変換。参照元の DXF 出力時 XY 反転と同じルール: [simaX, simaY] → [simaY, simaX]。 */
+function simaToMathPolygon(polygon) {
+    return polygon.map(([x, y]) => [y, x]);
+}
+
+/** 点 (px, py) が多角形の内側にあるか（ray casting）。 */
+function pointInPolygon(px, py, polygon) {
+    if (!polygon || polygon.length < 3) return false;
+    let inside = false;
+    const n = polygon.length;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+        const [xi, yi] = polygon[i];
+        const [xj, yj] = polygon[j];
+        if (((yi > py) !== (yj > py)) && (px < (xj - xi) * (py - yi) / (yj - yi) + xi)) inside = !inside;
+    }
+    return inside;
 }
 
 // ============================================================================
@@ -1375,7 +1452,7 @@ function createLASFile(points, header) {
         view.setInt32(offset + 8, z, true);
         view.setUint16(offset + 12, point.intensity || 0, true);
         view.setUint8(offset + 14, 0);
-        view.setUint8(offset + 15, 0);
+        view.setUint8(offset + 15, (point.classification !== undefined && point.classification !== null) ? point.classification : 0);
         view.setInt8(offset + 16, 0);
         view.setUint8(offset + 17, 0);
         view.setUint16(offset + 18, 0, true);
@@ -1670,6 +1747,133 @@ async function processSectionMode() {
         `;
         if (downloadCsvBtn) downloadCsvBtn.style.display = 'none';
         addLog('✅ 縦断・横断図作成（切抜→変換）が完了しました。');
+    } catch (err) {
+        console.error(err);
+        addLog(`❌ エラー: ${err.message}`);
+        alert(`エラー: ${err.message}`);
+    } finally {
+        processBtn.disabled = false;
+    }
+}
+
+// ============================================================================
+// ポリゴン境界（SIMA）で幅1cmライン描画
+// ============================================================================
+
+/**
+ * 前段: 参照元そのまま（parseSim → offsetPolygon）。後段: 全点読み込み → 3領域分類 → 帯マゼンタ・Classification → LAS出力。
+ */
+async function processPolygonBoundary() {
+    try {
+        if (!wasmReady || !LazPerf) {
+            throw new Error('LAZ解凍エンジンが初期化されていません。ページをリロードしてください。');
+        }
+        if (!simFile || !lazFile) {
+            throw new Error('LAZ/LASファイルとSIMA形式(.sim)ファイルを選択してください。');
+        }
+
+        processBtn.disabled = true;
+        progressSection.classList.add('active');
+        resultSection.classList.remove('active');
+        logDiv.innerHTML = '';
+        addLog('ポリゴン境界（幅1cmライン描画）を開始します...');
+        updateProgress(0, '初期化中');
+
+        const simText = await simFile.text();
+        const centerPoly = parseSim(simText);
+        if (!centerPoly || centerPoly.length < 3) {
+            throw new Error('SIMAファイルから有効なポリゴン（3頂点以上）を取得できませんでした。');
+        }
+        addLog(`前段: 中心ポリゴン ${centerPoly.length} 頂点`);
+
+        const innerPoly = offsetPolygon(centerPoly, -0.005);
+        const outerPoly = offsetPolygon(centerPoly, 0.005);
+        if (innerPoly.length < 3) addLog('⚠️ 内側オフセットポリゴンが3頂点未満です');
+        if (outerPoly.length < 3) addLog('⚠️ 外側オフセットポリゴンが3頂点未満です');
+        addLog(`内側オフセット: ${innerPoly.length} 頂点, 外側オフセット: ${outerPoly.length} 頂点`);
+
+        const innerMath = simaToMathPolygon(innerPoly);
+        const outerMath = simaToMathPolygon(outerPoly);
+        updateProgress(5, '前段完了');
+
+        const headerBlob = lazFile.slice(0, Math.min(375, lazFile.size));
+        const headerBuffer = await headerBlob.arrayBuffer();
+        const header = parseLASHeader(headerBuffer);
+        if (header.pointDataOffset > 375) {
+            const fullHeaderBlob = lazFile.slice(0, header.pointDataOffset);
+            Object.assign(header, parseLASHeader(await fullHeaderBlob.arrayBuffer()));
+        }
+        addLog(`点群: ${header.numPoints.toLocaleString()}点`);
+        const fileSizeMB = lazFile.size / (1024 * 1024);
+        const useStreaming = fileSizeMB > STREAMING_THRESHOLD_MB;
+        const chunkSizeMB = parseInt(chunkSizeInput?.value, 10) || DEFAULT_CHUNK_SIZE_MB;
+
+        let points = [];
+        if (header.isCompressed) {
+            addLog('LAZを解凍して全点読み込み中...');
+            const arrayBuffer = await lazFile.arrayBuffer();
+            const lasBuffer = await decompressLAZWithLazPerf(arrayBuffer, header);
+            const newHeader = parseLASHeader(lasBuffer);
+            Object.assign(header, newHeader);
+            header.isCompressed = false;
+            points = readAllPointsFromLASBuffer(lasBuffer, header);
+            addLog(`読込: ${points.length.toLocaleString()}点`);
+        } else if (useStreaming) {
+            addLog('非圧縮LASをストリーミングで全点読み込み中...');
+            points = await processLASStreamingAllPoints(lazFile, header, chunkSizeMB);
+        } else {
+            addLog('LASを全点読み込み中...');
+            const arrayBuffer = await lazFile.arrayBuffer();
+            points = readAllPointsFromLASBuffer(arrayBuffer, header);
+            addLog(`読込: ${points.length.toLocaleString()}点`);
+        }
+
+        updateProgress(50, '3領域分類中');
+        const hasRGB = RGB_FORMATS.includes(header.pointFormat);
+        let countInside = 0, countBand = 0, countOutside = 0;
+        for (let i = 0; i < points.length; i++) {
+            const p = points[i];
+            if (p.red === undefined) { p.red = 0; p.green = 0; p.blue = 0; }
+            const inInner = innerMath.length >= 3 && pointInPolygon(p.x, p.y, innerMath);
+            const inOuter = outerMath.length >= 3 && pointInPolygon(p.x, p.y, outerMath);
+            if (inInner) {
+                p.classification = CLASS_INSIDE;
+                countInside++;
+            } else if (inOuter) {
+                p.classification = CLASS_BAND;
+                p.red = 65535;
+                p.green = 0;
+                p.blue = 65535;
+                countBand++;
+            } else {
+                p.classification = CLASS_OUTSIDE;
+                countOutside++;
+            }
+            if (i % PROGRESS_UPDATE_INTERVAL === 0 && i > 0) {
+                const progress = 50 + (i / points.length) * 45;
+                updateProgress(progress, `分類: ${i.toLocaleString()}/${points.length.toLocaleString()}点`);
+                await new Promise(resolve => setTimeout(resolve, 0));
+            }
+        }
+        addLog(`内側: ${countInside.toLocaleString()}点, 帯: ${countBand.toLocaleString()}点, 外側: ${countOutside.toLocaleString()}点`);
+
+        updateProgress(95, 'LAS出力生成中');
+        const outputLasBuffer = createLASFile(points, header);
+        updateProgress(100, '完了');
+
+        const blob = new Blob([outputLasBuffer], { type: 'application/octet-stream' });
+        const url = URL.createObjectURL(blob);
+        downloadBtn.href = url;
+        downloadBtn.download = 'output_polygon.las';
+        resultSection.classList.add('active');
+        resultText.innerHTML = `
+            ポリゴン境界（幅1cmライン描画）が完了しました。<br>
+            出力点数: ${points.length.toLocaleString()}点（内側: ${countInside.toLocaleString()}, 帯: ${countBand.toLocaleString()}, 外側: ${countOutside.toLocaleString()}）<br>
+            Classification: 1=内側, 2=帯, 3=外側。帯の点はマゼンタで幅1cmの線として表示されます。<br>
+            ファイルサイズ: ${formatFileSize(outputLasBuffer.byteLength)}
+        `;
+        if (downloadCsvBtn) downloadCsvBtn.style.display = 'none';
+        addLog('✅ ポリゴン境界（幅1cmライン描画）が完了しました。');
     } catch (err) {
         console.error(err);
         addLog(`❌ エラー: ${err.message}`);
