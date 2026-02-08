@@ -91,7 +91,7 @@ async function initLazPerf() {
         console.log('laz-perf initialized:', LazPerf);
         wasmReady = true;
         
-        statusDiv.textContent = '✅ 準備完了！LAZ/LASファイルを選択してください（サーバー不要・完全ブラウザ処理）';
+        statusDiv.textContent = '✅ 準備完了！LAZ/LASファイルを選択してください';
         statusDiv.className = 'status success';
         
         return LazPerf;
@@ -395,7 +395,7 @@ function buildUpdatedCSV(centers, labels) {
 // SIMA・ポリゴン境界（参照元 dxf4segmentation をそのまま流用）
 // ============================================================================
 
-/** .sim テキストをパースし、ポリゴン座標列 [[x,y],...]（測量座標系）を返す。参照元 index.html 20–36行目そのまま。 */
+/** .sim テキストをパースし、ポリゴン座標列 [[x,y],...]（測量座標系）を返す。 */
 function parseSim(text) {
     const points = {};
     const order = [];
@@ -411,7 +411,7 @@ function parseSim(text) {
     return order.map(pt => points[pt]).filter(Boolean);
 }
 
-/** オフセット量は5mm=0.005m。参照元 index.html 56–64行目そのまま。Clipper.js は HTML で CDN 読み込み。 */
+/** オフセット量は5mm=0.005m。Clipper.js は HTML で CDN 読み込み。 */
 function offsetPolygon(polygon, offset_m) {
     const ClipperLib = globalThis.ClipperLib || window.ClipperLib;
     if (!ClipperLib) throw new Error('Clipper.js が読み込まれていません');

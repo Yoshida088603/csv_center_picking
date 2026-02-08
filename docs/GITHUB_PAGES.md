@@ -17,7 +17,7 @@
 
 ```
 csv_center_picking/
-├── index_github_pages.html    ← GitHub Pages用HTML
+├── index.html                  ← エントリ（GitHub Pages用）
 ├── app_github_pages.js         ← laz-perf使用のJavaScript
 ├── variants/                   ← 別構成（サーバー版・Pyodide版など）
 │   ├── index.html
@@ -32,8 +32,7 @@ csv_center_picking/
 ### GitHub Pagesで公開する場合
 
 1. **ファイルをアップロード**
-   - `index_github_pages.html` → `index.html`にリネーム（またはGitHub Pagesの設定で`index_github_pages.html`を指定）
-   - `app_github_pages.js`をそのままアップロード
+   - `index.html` と `app_github_pages.js` をそのままアップロード
 
 2. **GitHub Pagesを有効化**
    - リポジトリのSettings → Pages
@@ -49,7 +48,7 @@ csv_center_picking/
 python -m http.server 8000
 
 # ブラウザで開く
-# http://localhost:8000/index_github_pages.html
+# http://localhost:8000/index.html
 ```
 
 ## 🔧 技術詳細

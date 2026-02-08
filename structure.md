@@ -10,8 +10,7 @@
 
 ```
 ルート/
-├── index.html                … GitHub Pages のエントリ（app_github_pages.js を読み込む）
-├── index_github_pages.html   … 同上の別名（同じ内容）
+├── index.html                … エントリ（app_github_pages.js を読み込む）
 ├── app_github_pages.js       … アプリ本体（LAZ/LAS ブラウザ処理）
 ├── assets/
 │   └── ui-screenshot.png     … README 等で参照する画像
@@ -54,7 +53,7 @@
 
 | 役割 | 実体 | 備考 |
 |------|------|------|
-| エントリ | `index_github_pages.html` | 静的 HTML。`app_github_pages.js` を読み込む |
+| エントリ | `index.html` | 静的 HTML。`app_github_pages.js` を読み込む |
 | UI・制御 | `app_github_pages.js` | ファイル選択・進捗・ダウンロード |
 | LAZ 解凍 | laz-perf WASM | CDN 経由。ブラウザ内で解凍 |
 | 処理 | 同上（クライアント内） | データは外部に送信されない |
@@ -64,6 +63,6 @@
 ## 5. ローカルで試すとき
 
 1. ルートで `python -m http.server 8000` を実行する。
-2. ブラウザで `http://localhost:8000/index_github_pages.html` を開く。
+2. ブラウザで `http://localhost:8000/index.html` を開く。
 
 アプリの操作（ファイル選択→実行→ダウンロード）は README のライブデモと同じ。
