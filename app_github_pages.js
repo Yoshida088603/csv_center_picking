@@ -201,6 +201,88 @@ processBtn.addEventListener('click', () => {
     return processFiles();
 });
 
+// 3DDB COPC: 検索・ダウンロードボタン
+const copcSearchBtn = document.getElementById('copcSearchBtn');
+const copcDownloadBtn = document.getElementById('copcDownloadBtn');
+if (copcSearchBtn) {
+    copcSearchBtn.addEventListener('click', async () => {
+        const epsgEl = document.getElementById('copcEpsg');
+        const xEl = document.getElementById('copcX');
+        const yEl = document.getElementById('copcY');
+        const baseEl = document.getElementById('copcApiBase');
+        const epsg = epsgEl?.value || '6677';
+        const x = parseFloat(xEl?.value);
+        const y = parseFloat(yEl?.value);
+        const baseUrl = baseEl?.value?.trim() || COPC_3DDB_DEFAULT_BASE;
+        const messageEl = document.getElementById('copcMessage');
+        const listEl = document.getElementById('copcCandidateList');
+        const radiosEl = document.getElementById('copcCandidateRadios');
+        if (messageEl) messageEl.style.display = 'none';
+        if (listEl) listEl.style.display = 'none';
+        if (!Number.isFinite(x) || !Number.isFinite(y)) {
+            showCopcMessage('X・Yに数値を入力してください。', true);
+            console.warn('COPC search: invalid X or Y', { x, y });
+            return;
+        }
+        copcSearchBtn.disabled = true;
+        try {
+            const { lon, lat } = convertXYToLonLat(epsg, x, y);
+            console.log('Converted lon, lat', { lon, lat });
+            const useProxy = document.getElementById('copcUseProxy')?.checked === true;
+            const candidates = await searchCopc(lon, lat, baseUrl, { useProxy });
+            copcCandidates = candidates;
+            if (candidates.length === 0) {
+                showCopcMessage('該当COPCなし');
+                if (copcDownloadBtn) copcDownloadBtn.disabled = true;
+                return;
+            }
+            showCopcMessage(`候補 ${candidates.length} 件見つかりました。選択してLAZダウンロードを押してください。`);
+            radiosEl.innerHTML = '';
+            candidates.forEach((c, i) => {
+                const label = document.createElement('label');
+                label.style.display = 'block';
+                label.style.marginBottom = '8px';
+                const radio = document.createElement('input');
+                radio.type = 'radio';
+                radio.name = 'copcCandidate';
+                radio.value = String(i);
+                if (i === 0) radio.checked = true;
+                label.appendChild(radio);
+                const titleText = (c.title || '').slice(0, 60) + ((c.title || '').length > 60 ? '...' : '');
+                label.appendChild(document.createTextNode(` [${c.reg_id}] ${titleText}${c.isZip ? ' (ZIP)' : ''}`));
+                radiosEl.appendChild(label);
+            });
+            listEl.style.display = 'block';
+            if (copcDownloadBtn) copcDownloadBtn.disabled = false;
+        } catch (err) {
+            console.error('COPC search error', err);
+            showCopcMessage(`エラー: ${err.message}`, true);
+            if (copcDownloadBtn) copcDownloadBtn.disabled = true;
+        } finally {
+            copcSearchBtn.disabled = false;
+        }
+    });
+}
+if (copcDownloadBtn) {
+    copcDownloadBtn.addEventListener('click', () => {
+        const selected = document.querySelector('input[name="copcCandidate"]:checked');
+        const idx = selected ? parseInt(selected.value, 10) : 0;
+        const c = copcCandidates[idx];
+        if (!c || !c.external_link) {
+            showCopcMessage('候補を選択してからCOPC検索を実行してください。', true);
+            return;
+        }
+        const filename = c.isZip ? `3ddb_${c.reg_id}.zip` : `3ddb_${c.reg_id}.laz`;
+        try {
+            triggerDownload(c.external_link, filename);
+            showCopcMessage(`ダウンロードを開始しました: ${filename}`);
+        } catch (err) {
+            console.error('Download error', err);
+            showCopcMessage(`ダウンロードに失敗しました: ${err.message}`, true);
+        }
+    });
+}
+
 // 処理モード切替でUI表示を更新
 document.querySelectorAll('input[name="processMode"]').forEach((radio) => {
     radio.addEventListener('change', () => {
@@ -212,17 +294,22 @@ document.querySelectorAll('input[name="processMode"]').forEach((radio) => {
         const simSection = document.getElementById('simSection');
         const polygonSettings = document.getElementById('polygonSettings');
         const targetSettings = document.getElementById('targetSettings');
+        const copcSection = document.getElementById('copcSection');
+        const processBtn = document.getElementById('processBtn');
         const isCenter = mode === 'center';
         const isBoundaryLike = mode === 'boundary' || mode === 'section';
         const isPolygon = mode === 'polygon';
         const isTarget = mode === 'target';
+        const isCopc = mode === 'copc';
         if (csvSection) csvSection.style.display = isCenter ? 'block' : 'none';
         if (boundarySection) boundarySection.style.display = isBoundaryLike ? 'block' : 'none';
         if (simSection) simSection.style.display = isPolygon ? 'block' : 'none';
         if (polygonSettings) polygonSettings.style.display = isPolygon ? 'block' : 'none';
         if (targetSettings) targetSettings.style.display = isTarget ? 'block' : 'none';
+        if (copcSection) copcSection.style.display = isCopc ? 'block' : 'none';
         if (centerSettings) centerSettings.style.display = isCenter ? 'block' : 'none';
         if (sectionSettings) sectionSettings.style.display = mode === 'section' ? 'block' : 'none';
+        if (processBtn) processBtn.style.display = isCopc ? 'none' : 'block';
         checkFiles();
     });
 });
@@ -291,6 +378,155 @@ function formatFileSize(bytes) {
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB';
     if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
     return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+}
+
+// ============================================================================
+// 3DDB COPC取得（平面直角→経緯度→検索→LAZ丸ごとDL）
+// ============================================================================
+
+const COPC_3DDB_DEFAULT_BASE = 'https://gsrt.digiarc.aist.go.jp/3ddb_demo';
+let copcCandidates = [];
+
+/**
+ * 平面直角座標（X=Easting, Y=Northing）を JGD2011 経緯度（lon, lat）に変換
+ * @param {string|number} epsg - 系のEPSGコード（例: "6677"）
+ * @param {number} x - Easting (m)
+ * @param {number} y - Northing (m)
+ * @returns {{ lon: number, lat: number }} 経度・緯度（度）
+ */
+function convertXYToLonLat(epsg, x, y) {
+    const proj4 = globalThis.proj4 || window.proj4;
+    if (!proj4) throw new Error('proj4 が読み込まれていません');
+    const epsgStr = String(epsg).replace(/^EPSG:?/i, '');
+    const src = `EPSG:${epsgStr}`;
+    const dst = 'EPSG:6668'; // JGD2011 (geographic 2D)
+    if (!proj4.defs(src)) {
+        const defs = getPlaneRectangularDefs();
+        if (!defs[epsgStr]) throw new Error(`未対応の系です: ${epsgStr}`);
+        proj4.defs(src, defs[epsgStr]);
+    }
+    if (!proj4.defs(dst)) proj4.defs(dst, '+proj=longlat +ellps=GRS80 +datum=GRS80 +no_defs');
+    const [lon, lat] = proj4(src, dst).forward([x, y]);
+    return { lon, lat };
+}
+
+function getPlaneRectangularDefs() {
+    const tail = '+k=0.9999 +x_0=0 +y_0=0 +ellps=GRS80 +units=m +no_defs';
+    const latLon = [
+        [33, 129.5], [33, 131], [36, 132.166666667], [33, 133.5], [36, 134.333333333], [36, 136],
+        [36, 137.166666667], [36, 138.5], [36, 139.833333333], [40, 140.833333333], [44, 140.25],
+        [44, 142.25], [44, 144.25], [26, 142], [26, 127.5], [26, 124], [26, 131], [20, 136], [26, 154]
+    ];
+    const epsgList = ['6669', '6670', '6671', '6672', '6673', '6674', '6675', '6676', '6677', '6678', '6679', '6680', '6681', '6682', '6683', '6684', '6685', '6686', '6687'];
+    const defs = {};
+    epsgList.forEach((epsg, i) => {
+        const [lat0, lon0] = latLon[i];
+        defs[epsg] = `+proj=tmerc +lat_0=${lat0} +lon_0=${lon0} ${tail}`;
+    });
+    return defs;
+}
+
+/**
+ * 3DDB API で COPC 候補を検索
+ * @param {number} lon - 経度（度）
+ * @param {number} lat - 緯度（度）
+ * @param {string} baseUrl - APIベースURL
+ * @param {{ useProxy?: boolean }} [opts] - useProxy: true で同一オリジンの /api/3ddb_proxy 経由で取得（CORS回避）
+ * @returns {Promise<Array<{ reg_id: number, title: string, external_link: string }>>}
+ */
+async function searchCopc(lon, lat, baseUrl, opts = {}) {
+    const base = (baseUrl || COPC_3DDB_DEFAULT_BASE).replace(/\/$/, '');
+    const wkt = `POINT(${lon} ${lat})`;
+    const apiPath = `/api/v1/services/ALL/features?area=${encodeURIComponent(wkt)}&limit=50`;
+    let url = base + apiPath;
+    if (opts.useProxy && typeof location !== 'undefined' && location.origin) {
+        url = location.origin + '/api/3ddb_proxy?url=' + encodeURIComponent(url);
+    }
+    const res = await fetch(url);
+    if (!res.ok) {
+        if (opts.useProxy && res.status === 404) {
+            throw new Error('プロキシがありません。ターミナルで「python scripts/serve_with_3ddb_proxy.py」を実行してから、このページを http://localhost:8000 で開き直してください。');
+        }
+        throw new Error(`APIエラー: ${res.status} ${res.statusText}`);
+    }
+    const data = await res.json();
+    const features = data.features || [];
+
+    // 1件目でプロパティのキー一覧を確認（external_link が別名の可能性）
+    if (features.length > 0) {
+        const p0 = features[0].properties || {};
+        console.log('3DDB API 検索結果: 総 feature 数 =', features.length, '| 1件目の properties キー:', Object.keys(p0).join(', '));
+    }
+
+    const candidates = [];
+    for (const f of features) {
+        const p = f.properties || {};
+        const regId = p.reg_id;
+        const title = p.title || '';
+        let link = p.external_link;
+        const linkType = String(p.external_link_type || '').trim().toLowerCase();
+
+        // API が external_link を返さない場合: zipdata（ZIP）をフォールバック。プロキシ経由のときは同じオリジンでプロキシを使う
+        if (!link || typeof link !== 'string') {
+            if (regId != null && p.downloadable !== false) {
+                link = base + '/api/v1/zipdata/' + regId;
+                if (opts.useProxy && typeof location !== 'undefined' && location.origin) {
+                    link = location.origin + '/api/3ddb_proxy?url=' + encodeURIComponent(link);
+                }
+                candidates.push({
+                    reg_id: regId,
+                    title: title,
+                    external_link: link,
+                    description: p.description,
+                    isZip: true
+                });
+            }
+            continue;
+        }
+
+        // external_link がある場合: COPC/LAZ 候補として追加
+        const isCopcType = linkType === 'copc';
+        const looksLikeCopc = linkType === '' && (/\.laz$/i.test(link) || /copc|laz|pointcloud/i.test(link));
+        if (!isCopcType && !looksLikeCopc) continue;
+        candidates.push({
+            reg_id: regId,
+            title: title,
+            external_link: link,
+            description: p.description,
+            isZip: false
+        });
+    }
+    return candidates;
+}
+
+/**
+ * 指定URLをファイル名でダウンロード（&lt;a download&gt;でブラウザ標準DL）
+ * @param {string} url - ダウンロードURL
+ * @param {string} filename - 保存ファイル名
+ */
+function triggerDownload(url, filename) {
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename || 'download.laz';
+    a.rel = 'noopener';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+}
+
+function showCopcMessage(text, isError = false) {
+    const el = document.getElementById('copcMessage');
+    if (!el) return;
+    el.textContent = text;
+    el.className = 'status' + (isError ? ' error' : ' success');
+    el.style.display = 'block';
+}
+
+function safeFilenameFromTitle(title) {
+    return (title || '')
+        .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
+        .replace(/\s+/g, '_')
+        .slice(0, 80) || '3ddb';
 }
 
 function addLog(message) {

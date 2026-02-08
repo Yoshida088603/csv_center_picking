@@ -306,6 +306,10 @@
                         <input type="radio" name="processMode" id="processModeTarget" value="target">
                         ターゲット配置（四隅）
                     </label>
+                    <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal;">
+                        <input type="radio" name="processMode" id="processModeCopc" value="copc">
+                        3DDB COPC取得（平面直角→検索→LAZ丸ごとDL）
+                    </label>
                 </div>
             </div>
 
@@ -396,6 +400,64 @@
                 </div>
             </div>
 
+            <div id="copcSection" style="display: none;" class="settings">
+                <h4 style="margin-bottom: 10px;">3DDB COPC取得（平面直角座標で検索→LAZ丸ごとダウンロード）</h4>
+                <div class="setting-item">
+                    <label for="copcEpsg">系（平面直角座標系）</label>
+                    <select id="copcEpsg">
+                        <option value="6669">1系（EPSG:6669）</option>
+                        <option value="6670">2系（EPSG:6670）</option>
+                        <option value="6671">3系（EPSG:6671）</option>
+                        <option value="6672">4系（EPSG:6672）</option>
+                        <option value="6673">5系（EPSG:6673）</option>
+                        <option value="6674">6系（EPSG:6674）</option>
+                        <option value="6675">7系（EPSG:6675）</option>
+                        <option value="6676">8系（EPSG:6676）</option>
+                        <option value="6677" selected>9系（EPSG:6677）東京</option>
+                        <option value="6678">10系（EPSG:6678）</option>
+                        <option value="6679">11系（EPSG:6679）</option>
+                        <option value="6680">12系（EPSG:6680）</option>
+                        <option value="6681">13系（EPSG:6681）</option>
+                        <option value="6682">14系（EPSG:6682）</option>
+                        <option value="6683">15系（EPSG:6683）</option>
+                        <option value="6684">16系（EPSG:6684）</option>
+                        <option value="6685">17系（EPSG:6685）</option>
+                        <option value="6686">18系（EPSG:6686）</option>
+                        <option value="6687">19系（EPSG:6687）</option>
+                    </select>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                    <div class="setting-item">
+                        <label for="copcX">X (Easting, m)</label>
+                        <input type="number" id="copcX" step="any" placeholder="X">
+                    </div>
+                    <div class="setting-item">
+                        <label for="copcY">Y (Northing, m)</label>
+                        <input type="number" id="copcY" step="any" placeholder="Y">
+                    </div>
+                </div>
+                <div class="setting-item">
+                    <label for="copcApiBase">3DDB API ベースURL（任意）</label>
+                    <input type="text" id="copcApiBase" placeholder="https://gsrt.digiarc.aist.go.jp/3ddb_demo" style="width:100%; padding:8px;">
+                    <small style="color: #666; font-size: 12px;">未入力時はデフォルト（上記URL）を使用</small>
+                </div>
+                <div class="setting-item" style="margin-top: 8px;">
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-weight: normal;">
+                        <input type="checkbox" id="copcUseProxy" checked>
+                        プロキシ経由で検索（ローカルは必須。python scripts/serve_with_3ddb_proxy.py で起動すること）
+                    </label>
+                </div>
+                <div style="display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap;">
+                    <button type="button" class="process-btn" id="copcSearchBtn" style="max-width: 200px;">COPC検索</button>
+                    <button type="button" class="process-btn" id="copcDownloadBtn" style="max-width: 220px; background: #28a745;" disabled>LAZダウンロード</button>
+                </div>
+                <div id="copcMessage" class="status" style="margin-top: 12px; display: none;"></div>
+                <div id="copcCandidateList" style="margin-top: 12px; display: none;">
+                    <label class="setting-item">候補（選択してLAZダウンロード）</label>
+                    <div id="copcCandidateRadios"></div>
+                </div>
+            </div>
+
             <div id="targetSettings" style="display: none;" class="settings">
                 <h4 style="margin-bottom: 10px;">ターゲット配置の設定</h4>
                 <div class="setting-item">
@@ -471,6 +533,7 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/clipper-lib@6.4.2/clipper.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/proj4@2.9.2/dist/proj4.js"></script>
     <script type="module" src="app_github_pages.js"></script>
 </body>
 </html>

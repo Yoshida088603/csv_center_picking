@@ -51,3 +51,4 @@ terminals/
 
 # 参照用（Git管理しない）
 dxf4segmentation/
+aist_3ddb_client/
