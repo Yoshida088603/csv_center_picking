@@ -15,6 +15,21 @@ const DEFAULT_CHUNK_SIZE_MB = 100; // デフォルトチャンクサイズ（MB�
 // RGB情報を含むLAS Point Format
 const RGB_FORMATS = [2, 3, 5, 7, 8, 10];
 
+/**
+ * 点レコード内のRGB先頭バイトオフセット（ASPRS LAS仕様）
+ * Format 2: 20, Format 3/7: 28 (20+GPS 8), Format 5/8: 30 (20+GPS 8+Wave 2), Format 10: 30
+ * @param {number} pointFormat - Point Format ID (0-10)
+ * @returns {number} RGBのRedが始まるオフセット。RGB無しなら -1
+ */
+function getRgbByteOffset(pointFormat) {
+    switch (pointFormat) {
+        case 2: return 20;
+        case 3: case 7: return 28;
+        case 5: case 8: case 10: return 30;
+        default: return -1;
+    }
+}
+
 // ポリゴン境界モード: Classification（内側・帯・外側）
 const CLASS_INSIDE = 1;
 const CLASS_BAND = 2;
@@ -1016,18 +1031,14 @@ function parsePointCoordinates(view, offset, header) {
  * @returns {Object|null} RGB情報 {red, green, blue} または null
  */
 function parseRGBData(view, offset, header) {
-    if (!RGB_FORMATS.includes(header.pointFormat)) {
+    const rgbOff = getRgbByteOffset(header.pointFormat);
+    if (rgbOff < 0 || offset + rgbOff + 6 > view.buffer.byteLength) {
         return null;
     }
-    
-    if (offset + 26 > view.buffer.byteLength) {
-        return null;
-    }
-    
     return {
-        red: view.getUint16(offset + 20, true),
-        green: view.getUint16(offset + 22, true),
-        blue: view.getUint16(offset + 24, true)
+        red: view.getUint16(offset + rgbOff, true),
+        green: view.getUint16(offset + rgbOff + 2, true),
+        blue: view.getUint16(offset + rgbOff + 4, true)
     };
 }
 
@@ -1213,8 +1224,9 @@ async function decompressLAZWithLazPerfStreaming(arrayBuffer, header, centers, r
         const pointPtr = LazPerf._malloc(pointRecordLength);
         const pointHeap = new Uint8Array(LazPerf.HEAPU8.buffer, pointPtr, pointRecordLength);
         
-        // RGB情報があるかチェック
+        // RGB情報があるかチェック（フォーマット別オフセット対応）
         const hasRGB = RGB_FORMATS.includes(header.pointFormat);
+        const rgbOffset = getRgbByteOffset(header.pointFormat);
         
             // 各ポイントを解凍して直接フィルタリング（メモリに保持しない）
             // パフォーマンス測定はバッチ単位でオーバーヘッドを削減
@@ -1254,11 +1266,11 @@ async function decompressLAZWithLazPerfStreaming(arrayBuffer, header, centers, r
                 if (isPointNearCenters(x, y, z)) {
                     point = { x, y, z, intensity };
                     
-                    // RGB情報がある場合
-                    if (hasRGB && pointRecordLength >= 26) {
-                        point.red = view.getUint16(20, true);
-                        point.green = view.getUint16(22, true);
-                        point.blue = view.getUint16(24, true);
+                    // RGB情報がある場合（フォーマット3はオフセット28）
+                    if (hasRGB && rgbOffset >= 0 && pointRecordLength >= rgbOffset + 6) {
+                        point.red = view.getUint16(rgbOffset, true);
+                        point.green = view.getUint16(rgbOffset + 2, true);
+                        point.blue = view.getUint16(rgbOffset + 4, true);
                     }
                     
                     filteredPoints.push(point);
@@ -1456,12 +1468,13 @@ async function processLASStreaming(file, header, centers, radius, chunkSizeMB = 
             
             const point = { x, y, z, intensity };
             
-            // RGB情報がある場合
+            // RGB情報がある場合（フォーマット別オフセット）
             const hasRGB = RGB_FORMATS.includes(header.pointFormat);
-            if (hasRGB && chunkOffset + 26 <= chunkBuffer.byteLength) {
-                point.red = view.getUint16(chunkOffset + 20, true);
-                point.green = view.getUint16(chunkOffset + 22, true);
-                point.blue = view.getUint16(chunkOffset + 24, true);
+            const rgbOff = getRgbByteOffset(header.pointFormat);
+            if (hasRGB && rgbOff >= 0 && chunkOffset + rgbOff + 6 <= chunkBuffer.byteLength) {
+                point.red = view.getUint16(chunkOffset + rgbOff, true);
+                point.green = view.getUint16(chunkOffset + rgbOff + 2, true);
+                point.blue = view.getUint16(chunkOffset + rgbOff + 4, true);
             }
             
             // フィルタリング処理の時間測定
@@ -1526,6 +1539,7 @@ async function processLASStreamingAllPoints(file, header, chunkSizeMB = DEFAULT_
     const chunkSizeBytes = chunkSizeMB * 1024 * 1024;
     const pointsPerChunk = Math.floor(chunkSizeBytes / pointRecordLength);
     const hasRGB = RGB_FORMATS.includes(header.pointFormat);
+    const rgbOff = getRgbByteOffset(header.pointFormat);
     let currentPointIndex = 0;
     let currentOffset = pointDataOffset;
 
@@ -1547,10 +1561,10 @@ async function processLASStreamingAllPoints(file, header, chunkSizeMB = DEFAULT_
             const y = rawY * header.scaleY + header.offsetY;
             const z = rawZ * header.scaleZ + header.offsetZ;
             const point = { x, y, z, intensity: view.getUint16(chunkOffset + 12, true) };
-            if (hasRGB && chunkOffset + 26 <= chunkBuffer.byteLength) {
-                point.red = view.getUint16(chunkOffset + 20, true);
-                point.green = view.getUint16(chunkOffset + 22, true);
-                point.blue = view.getUint16(chunkOffset + 24, true);
+            if (hasRGB && rgbOff >= 0 && chunkOffset + rgbOff + 6 <= chunkBuffer.byteLength) {
+                point.red = view.getUint16(chunkOffset + rgbOff, true);
+                point.green = view.getUint16(chunkOffset + rgbOff + 2, true);
+                point.blue = view.getUint16(chunkOffset + rgbOff + 4, true);
             }
             allPoints.push(point);
             chunkOffset += pointRecordLength;
@@ -1589,6 +1603,7 @@ async function decompressLAZAndTransformBoundary(arrayBuffer, header, xA, yA, ux
     const copyView = new Uint8Array(pointCopy);
     const view = new DataView(pointCopy);
     const hasRGB = RGB_FORMATS.includes(header.pointFormat);
+    const rgbOffset = getRgbByteOffset(header.pointFormat);
 
     for (let i = 0; i < pointCount; i++) {
         laszip.getPoint(pointPtr);
@@ -1601,10 +1616,10 @@ async function decompressLAZAndTransformBoundary(arrayBuffer, header, xA, yA, ux
         const z = rawZ * header.scaleZ + header.offsetZ;
         const t = transformPointBoundary(x, y, z, xA, yA, ux, uy, vx, vy);
         const point = { x: t.x, y: t.y, z: t.z, intensity: view.getUint16(12, true) };
-        if (hasRGB && pointRecordLength >= 26) {
-            point.red = view.getUint16(20, true);
-            point.green = view.getUint16(22, true);
-            point.blue = view.getUint16(24, true);
+        if (hasRGB && rgbOffset >= 0 && pointRecordLength >= rgbOffset + 6) {
+            point.red = view.getUint16(rgbOffset, true);
+            point.green = view.getUint16(rgbOffset + 2, true);
+            point.blue = view.getUint16(rgbOffset + 4, true);
         }
         transformedPoints.push(point);
         if (i % PROGRESS_UPDATE_INTERVAL === 0 && i > 0) {
@@ -1637,6 +1652,7 @@ async function processLASStreamingClipAndTransform(file, header, xA, yA, ux, uy,
     const chunkSizeBytes = chunkSizeMB * 1024 * 1024;
     const pointsPerChunk = Math.floor(chunkSizeBytes / pointRecordLength);
     const hasRGB = RGB_FORMATS.includes(header.pointFormat);
+    const rgbOff = getRgbByteOffset(header.pointFormat);
     let currentPointIndex = 0;
     let currentOffset = pointDataOffset;
 
@@ -1661,10 +1677,10 @@ async function processLASStreamingClipAndTransform(file, header, xA, yA, ux, uy,
             const t = clipAndTransformToProfile(x, y, z, xA, yA, ux, uy, vx, vy, halfWidth);
             if (t) {
                 const p = { x: t.x, y: t.y, z: t.z, intensity: view.getUint16(chunkOffset + 12, true) };
-                if (hasRGB && chunkOffset + 26 <= chunkBuffer.byteLength) {
-                    p.red = view.getUint16(chunkOffset + 20, true);
-                    p.green = view.getUint16(chunkOffset + 22, true);
-                    p.blue = view.getUint16(chunkOffset + 24, true);
+                if (hasRGB && rgbOff >= 0 && chunkOffset + rgbOff + 6 <= chunkBuffer.byteLength) {
+                    p.red = view.getUint16(chunkOffset + rgbOff, true);
+                    p.green = view.getUint16(chunkOffset + rgbOff + 2, true);
+                    p.blue = view.getUint16(chunkOffset + rgbOff + 4, true);
                 }
                 outPoints.push(p);
             }
@@ -1707,6 +1723,7 @@ async function decompressLAZClipAndTransform(arrayBuffer, header, xA, yA, ux, uy
     const copyView = new Uint8Array(pointCopy);
     const view = new DataView(pointCopy);
     const hasRGB = RGB_FORMATS.includes(header.pointFormat);
+    const rgbOffset = getRgbByteOffset(header.pointFormat);
 
     for (let i = 0; i < pointCount; i++) {
         laszip.getPoint(pointPtr);
@@ -1722,10 +1739,10 @@ async function decompressLAZClipAndTransform(arrayBuffer, header, xA, yA, ux, uy
         const t = clipAndTransformToProfile(x, y, z, xA, yA, ux, uy, vx, vy, halfWidth);
         if (t) {
             const p = { x: t.x, y: t.y, z: t.z, intensity: view.getUint16(12, true) };
-            if (hasRGB && pointRecordLength >= 26) {
-                p.red = view.getUint16(20, true);
-                p.green = view.getUint16(22, true);
-                p.blue = view.getUint16(24, true);
+            if (hasRGB && rgbOffset >= 0 && pointRecordLength >= rgbOffset + 6) {
+                p.red = view.getUint16(rgbOffset, true);
+                p.green = view.getUint16(rgbOffset + 2, true);
+                p.blue = view.getUint16(rgbOffset + 4, true);
             }
             outPoints.push(p);
         }
@@ -1757,6 +1774,7 @@ function readAllPointsFromLASBuffer(buffer, header) {
     let offset = header.pointDataOffset;
     const points = [];
     const hasRGB = RGB_FORMATS.includes(header.pointFormat);
+    const rgbOff = getRgbByteOffset(header.pointFormat);
     const pointRecordLength = header.pointRecordLength;
     const numPoints = header.numPoints;
 
@@ -1769,10 +1787,10 @@ function readAllPointsFromLASBuffer(buffer, header) {
         const y = rawY * header.scaleY + header.offsetY;
         const z = rawZ * header.scaleZ + header.offsetZ;
         const point = { x, y, z, intensity: view.getUint16(offset + 12, true) };
-        if (hasRGB && offset + 26 <= buffer.byteLength) {
-            point.red = view.getUint16(offset + 20, true);
-            point.green = view.getUint16(offset + 22, true);
-            point.blue = view.getUint16(offset + 24, true);
+        if (hasRGB && rgbOff >= 0 && offset + rgbOff + 6 <= buffer.byteLength) {
+            point.red = view.getUint16(offset + rgbOff, true);
+            point.green = view.getUint16(offset + rgbOff + 2, true);
+            point.blue = view.getUint16(offset + rgbOff + 4, true);
         }
         points.push(point);
         offset += pointRecordLength;
@@ -1789,8 +1807,9 @@ function* readUncompressedLAS(buffer, header) {
     const points = [];
     const batchSize = 100000;
     
-    // RGB情報があるフォーマットかチェック
+    // RGB情報があるフォーマットかチェック（フォーマット別オフセット）
     const hasRGB = RGB_FORMATS.includes(header.pointFormat);
+    const rgbOff = getRgbByteOffset(header.pointFormat);
     
     for (let i = 0; i < header.numPoints; i++) {
         if (offset + header.pointRecordLength > buffer.byteLength) {
@@ -1809,14 +1828,10 @@ function* readUncompressedLAS(buffer, header) {
         
         const point = { x, y, z, intensity };
         
-        // RGB情報を読み込む（Format 2以降、オフセット20から）
-        if (hasRGB && offset + 26 <= buffer.byteLength) {
-            const red = view.getUint16(offset + 20, true);
-            const green = view.getUint16(offset + 22, true);
-            const blue = view.getUint16(offset + 24, true);
-            point.red = red;
-            point.green = green;
-            point.blue = blue;
+        if (hasRGB && rgbOff >= 0 && offset + rgbOff + 6 <= buffer.byteLength) {
+            point.red = view.getUint16(offset + rgbOff, true);
+            point.green = view.getUint16(offset + rgbOff + 2, true);
+            point.blue = view.getUint16(offset + rgbOff + 4, true);
         }
         
         points.push(point);
@@ -2126,6 +2141,7 @@ async function processSectionMode() {
             const arrayBuffer = await lazFile.arrayBuffer();
             const view = new DataView(arrayBuffer);
             const hasRGB = RGB_FORMATS.includes(header.pointFormat);
+            const rgbOff = getRgbByteOffset(header.pointFormat);
             const prl = header.pointRecordLength;
             let offset = header.pointDataOffset;
             for (let i = 0; i < header.numPoints; i++) {
@@ -2139,10 +2155,10 @@ async function processSectionMode() {
                 const t = clipAndTransformToProfile(x, y, z, xA, yA, ux, uy, vx, vy, halfWidth);
                 if (t) {
                     const p = { x: t.x, y: t.y, z: t.z, intensity: view.getUint16(offset + 12, true) };
-                    if (hasRGB && offset + 26 <= arrayBuffer.byteLength) {
-                        p.red = view.getUint16(offset + 20, true);
-                        p.green = view.getUint16(offset + 22, true);
-                        p.blue = view.getUint16(offset + 24, true);
+                    if (hasRGB && rgbOff >= 0 && offset + rgbOff + 6 <= arrayBuffer.byteLength) {
+                        p.red = view.getUint16(offset + rgbOff, true);
+                        p.green = view.getUint16(offset + rgbOff + 2, true);
+                        p.blue = view.getUint16(offset + rgbOff + 4, true);
                     }
                     outPoints.push(p);
                 }
