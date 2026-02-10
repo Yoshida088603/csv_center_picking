@@ -341,7 +341,7 @@
             </div>
 
             <div id="boundarySection" style="display: none;" class="settings">
-                <h4 style="margin-bottom: 10px;">測量座標系で２点の座標値を入力してください（XYZ座標・Zはスフィア中心に使用）</h4>
+                <h4 style="margin-bottom: 10px;">測量座標系で２点の座標値を入力してください（XYZ座標・Zはマーカー中心に使用）</h4>
                 <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 15px;">
                     <div class="setting-item">
                         <label for="pointAX">点A X (m)</label>
@@ -368,7 +368,24 @@
                         <input type="number" id="pointBZ" step="any" placeholder="zB（省略可）">
                     </div>
                 </div>
-                <p style="font-size: 12px; color: #666; margin-top: 5px;">A・B各点を中心に半径0.01m・約50点のスフィア点群（マゼンタ）を、座標変換前に追加します。</p>
+                <div class="setting-item" style="margin-top: 10px;">
+                    <label>A・Bのマーカー</label>
+                    <div style="display: flex; gap: 16px; margin-top: 6px; flex-wrap: wrap;">
+                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal;">
+                            <input type="radio" name="boundaryMarker" value="sphere" checked>
+                            スフィア（半径0.01m・各50点・マゼンタ）
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal;">
+                            <input type="radio" name="boundaryMarker" value="target">
+                            白黒ターゲット（座標変換後に正面向き）
+                        </label>
+                    </div>
+                </div>
+                <div id="boundaryTargetSizeWrap" class="setting-item" style="margin-top: 6px; display: none;">
+                    <label for="boundaryTargetSize">ターゲット半幅 (m)</label>
+                    <input type="number" id="boundaryTargetSize" value="0.1" min="0.01" step="any">
+                    <small style="color: #666; font-size: 12px;">A・B各点を中心とする正方形の半辺長。0.1 = 一辺20cm。</small>
+                </div>
                 <div class="setting-item" style="margin-top: 10px;">
                     <label for="boundaryDirection">X'軸の向き（どちらを「左」にするか）</label>
                     <select id="boundaryDirection">

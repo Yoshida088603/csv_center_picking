@@ -391,6 +391,7 @@ document.querySelectorAll('input[name="processMode"]').forEach((radio) => {
         const isCopc = mode === 'copc';
         if (csvSection) csvSection.style.display = isCenter ? 'block' : 'none';
         if (boundarySection) boundarySection.style.display = isBoundaryLike ? 'block' : 'none';
+        if (isBoundaryLike && typeof updateBoundaryMarkerUI === 'function') updateBoundaryMarkerUI();
         if (simSection) simSection.style.display = isPolygon ? 'block' : 'none';
         if (polygonSettings) polygonSettings.style.display = isPolygon ? 'block' : 'none';
         if (targetSettings) targetSettings.style.display = isTarget ? 'block' : 'none';
@@ -401,6 +402,16 @@ document.querySelectorAll('input[name="processMode"]').forEach((radio) => {
         checkFiles();
     });
 });
+
+function updateBoundaryMarkerUI() {
+    const wrap = document.getElementById('boundaryTargetSizeWrap');
+    const useTarget = document.querySelector('input[name="boundaryMarker"]:checked')?.value === 'target';
+    if (wrap) wrap.style.display = useTarget ? 'block' : 'none';
+}
+document.querySelectorAll('input[name="boundaryMarker"]').forEach((radio) => {
+    radio.addEventListener('change', updateBoundaryMarkerUI);
+});
+document.addEventListener('DOMContentLoaded', updateBoundaryMarkerUI);
 
 function checkFiles() {
     const mode = document.querySelector('input[name="processMode"]:checked')?.value || 'center';
@@ -1009,6 +1020,41 @@ function generateCheckerboardTarget(cx, cy, cz, halfSize = 0.1) {
             const isBlack = (x < cx && y >= cy) || (x >= cx && y < cy);
             const v = isBlack ? 0 : 65535;
             points.push({ x, y, z: cz, intensity: 0, red: v, green: v, blue: v });
+        }
+    }
+    return points;
+}
+
+/**
+ * 境界・縦断図用：座標変換後に正面を向く白黒ターゲットを生成。
+ * 平面は境界に垂直な鉛直面（法線 = (vx, vy, 0)）に置き、変換後は X'Y' 平面（Z'=const）となり正面になる。
+ * @param {number} cx - 中心X
+ * @param {number} cy - 中心Y
+ * @param {number} cz - 中心Z
+ * @param {number} halfSize - 半幅（m）
+ * @param {number} ux - 境界方向X（平面内の第1軸）
+ * @param {number} uy - 境界方向Y
+ * @param {number} vx - 境界に垂直な水平方向X（平面の法線の水平成分）
+ * @param {number} vy - 境界に垂直な水平方向Y
+ * @returns {Object[]} { x, y, z, intensity, red, green, blue } の配列
+ */
+function generateCheckerboardTargetFacingProfile(cx, cy, cz, halfSize, ux, uy, vx, vy) {
+    const points = [];
+    const side = 2 * halfSize;
+    const gridN = Math.max(2, Math.round(side / TARGET_PITCH) + 1);
+    const step = side / (gridN - 1);
+    const u0 = -halfSize;
+    const v0 = -halfSize;
+    for (let i = 0; i < gridN; i++) {
+        for (let j = 0; j < gridN; j++) {
+            const u = u0 + i * step;
+            const v = v0 + j * step;
+            const x = cx + u * ux;
+            const y = cy + u * uy;
+            const z = cz + v;
+            const isBlack = (u < 0 && v >= 0) || (u >= 0 && v < 0);
+            const val = isBlack ? 0 : 65535;
+            points.push({ x, y, z, intensity: 0, red: val, green: val, blue: val });
         }
     }
     return points;
@@ -2133,20 +2179,25 @@ async function processBoundaryTransform() {
         const { fileSizeMB, useStreaming, chunkSizeMB } = getStreamingOptions(lazFile);
         const SPHERE_RADIUS = 0.01;
         const SPHERE_POINTS = 50;
+        const useTargetMarker = document.querySelector('input[name="boundaryMarker"]:checked')?.value === 'target';
+        const targetHalf = (parseFloat(document.getElementById('boundaryTargetSize')?.value) || 0.1);
+        let markerPointsA, markerPointsB;
+        if (useTargetMarker) {
+            markerPointsA = generateCheckerboardTargetFacingProfile(xA, yA, zA, targetHalf, ux, uy, vx, vy);
+            markerPointsB = generateCheckerboardTargetFacingProfile(xB, yB, zB, targetHalf, ux, uy, vx, vy);
+        } else {
+            markerPointsA = generateSpherePointCloud(xA, yA, zA, SPHERE_RADIUS, SPHERE_POINTS, true);
+            markerPointsB = generateSpherePointCloud(xB, yB, zB, SPHERE_RADIUS, SPHERE_POINTS, true);
+        }
+        const markerCount = markerPointsA.length + markerPointsB.length;
 
         if (header.isCompressed) {
             addLog('LAZをストリーミング解凍し、境界基準座標に変換してLASに書き出しています...');
             const arrayBuffer = await lazFile.arrayBuffer();
-            const sphereA = generateSpherePointCloud(xA, yA, zA, SPHERE_RADIUS, SPHERE_POINTS, true);
-            const sphereB = generateSpherePointCloud(xB, yB, zB, SPHERE_RADIUS, SPHERE_POINTS, true);
             const extraPoints = [];
-            for (const p of sphereA) {
+            for (const p of [...markerPointsA, ...markerPointsB]) {
                 const t = transformPointBoundary(p.x, p.y, p.z, xA, yA, ux, uy, vx, vy);
-                extraPoints.push({ x: t.x, y: t.y, z: t.z, intensity: p.intensity, red: p.red, green: p.green, blue: p.blue });
-            }
-            for (const p of sphereB) {
-                const t = transformPointBoundary(p.x, p.y, p.z, xA, yA, ux, uy, vx, vy);
-                extraPoints.push({ x: t.x, y: t.y, z: t.z, intensity: p.intensity, red: p.red, green: p.green, blue: p.blue });
+                extraPoints.push({ x: t.x, y: t.y, z: t.z, intensity: p.intensity ?? 0, red: p.red, green: p.green, blue: p.blue });
             }
             boundaryOutputBlob = await streamLAZToLASBlob(arrayBuffer, header, {
                 onPoint(p, i) {
@@ -2164,14 +2215,17 @@ async function processBoundaryTransform() {
                 },
                 extraPoints
             });
-            addLog(`スフィア点群を追加: A・B各${SPHERE_POINTS}点（半径${SPHERE_RADIUS}m・マゼンタ）、合計+${extraPoints.length}点`);
+            if (useTargetMarker) {
+                addLog(`白黒ターゲットを追加: A・B各中心（半幅${targetHalf}m・正面向き）、合計+${extraPoints.length}点`);
+            } else {
+                addLog(`スフィア点群を追加: A・B各${SPHERE_POINTS}点（半径${SPHERE_RADIUS}m・マゼンタ）、合計+${extraPoints.length}点`);
+            }
         } else if (useStreaming) {
             addLog('非圧縮LASをストリーミングで全点読み込み中...');
             points = await processLASStreamingAllPoints(lazFile, header, chunkSizeMB);
-            const sphereA = generateSpherePointCloud(xA, yA, zA, SPHERE_RADIUS, SPHERE_POINTS, true);
-            const sphereB = generateSpherePointCloud(xB, yB, zB, SPHERE_RADIUS, SPHERE_POINTS, true);
-            points.push(...sphereA, ...sphereB);
-            addLog(`スフィア点群を追加: A・B各${SPHERE_POINTS}点（半径${SPHERE_RADIUS}m・マゼンタ）、座標変換前に追加`);
+            points.push(...markerPointsA, ...markerPointsB);
+            if (useTargetMarker) addLog(`白黒ターゲットを追加: A・B各中心（半幅${targetHalf}m）、座標変換前に追加`);
+            else addLog(`スフィア点群を追加: A・B各${SPHERE_POINTS}点（半径${SPHERE_RADIUS}m・マゼンタ）、座標変換前に追加`);
             addLog('座標変換を適用しています...');
             updateProgress(75, '座標変換中');
             transformPointsBoundary(points, xA, yA, ux, uy, vx, vy);
@@ -2181,10 +2235,9 @@ async function processBoundaryTransform() {
             updateProgress(20, '読込中');
             points = readAllPointsFromLASBuffer(arrayBuffer, header);
             addLog(`読込: ${points.length.toLocaleString()}点`);
-            const sphereA = generateSpherePointCloud(xA, yA, zA, SPHERE_RADIUS, SPHERE_POINTS, true);
-            const sphereB = generateSpherePointCloud(xB, yB, zB, SPHERE_RADIUS, SPHERE_POINTS, true);
-            points.push(...sphereA, ...sphereB);
-            addLog(`スフィア点群を追加: A・B各${SPHERE_POINTS}点（半径${SPHERE_RADIUS}m・マゼンタ）、座標変換前に追加`);
+            points.push(...markerPointsA, ...markerPointsB);
+            if (useTargetMarker) addLog(`白黒ターゲットを追加: A・B各中心（半幅${targetHalf}m）、座標変換前に追加`);
+            else addLog(`スフィア点群を追加: A・B各${SPHERE_POINTS}点（半径${SPHERE_RADIUS}m・マゼンタ）、座標変換前に追加`);
             addLog('座標変換を適用しています...');
             updateProgress(70, '座標変換中');
             transformPointsBoundary(points, xA, yA, ux, uy, vx, vy);
@@ -2195,7 +2248,7 @@ async function processBoundaryTransform() {
         if (boundaryOutputBlob) {
             updateProgress(95, 'LAS出力完了');
             blob = boundaryOutputBlob;
-            totalPoints = header.numPoints + 100; // 元点群 + スフィアA50 + スフィアB50
+            totalPoints = header.numPoints + markerCount;
         } else {
             for (const p of points) ensurePointRGB(p);
             const scaleYInput = parseFloat(document.getElementById('scaleY')?.value);
@@ -2217,7 +2270,7 @@ async function processBoundaryTransform() {
         resultSection.classList.add('active');
         resultText.innerHTML = `
             立面図作成が完了しました。<br>
-            出力点数: ${totalPoints.toLocaleString()}点（元点群＋A・Bスフィア各50点）<br>
+            出力点数: ${totalPoints.toLocaleString()}点（元点群＋A・Bマーカー${markerCount}点）<br>
             ファイルサイズ: ${formatFileSize(blob.size)}<br>
             <small>出力XY=立面（X=境界方向, Y=標高）, Z=奥行。XY平面表示で立面図になります。</small>
         `;
@@ -2284,6 +2337,16 @@ async function processSectionMode() {
         const { fileSizeMB, useStreaming, chunkSizeMB } = getStreamingOptions(lazFile);
         const SPHERE_RADIUS = 0.01;
         const SPHERE_POINTS = 50;
+        const useTargetMarker = document.querySelector('input[name="boundaryMarker"]:checked')?.value === 'target';
+        const targetHalf = (parseFloat(document.getElementById('boundaryTargetSize')?.value) || 0.1);
+        let markerPointsA, markerPointsB;
+        if (useTargetMarker) {
+            markerPointsA = generateCheckerboardTargetFacingProfile(xA, yA, zA, targetHalf, ux, uy, vx, vy);
+            markerPointsB = generateCheckerboardTargetFacingProfile(xB, yB, zB, targetHalf, ux, uy, vx, vy);
+        } else {
+            markerPointsA = generateSpherePointCloud(xA, yA, zA, SPHERE_RADIUS, SPHERE_POINTS, true);
+            markerPointsB = generateSpherePointCloud(xB, yB, zB, SPHERE_RADIUS, SPHERE_POINTS, true);
+        }
 
         let outPoints = [];
 
@@ -2328,17 +2391,19 @@ async function processSectionMode() {
             }
         }
 
-        // スフィアは「オリジナル座標系で追加」→同じ切抜判定→同じ変換で outPoints に追加
-        const sphereA = generateSpherePointCloud(xA, yA, zA, SPHERE_RADIUS, SPHERE_POINTS, true);
-        const sphereB = generateSpherePointCloud(xB, yB, zB, SPHERE_RADIUS, SPHERE_POINTS, true);
+        // マーカー（スフィア or 白黒ターゲット）はオリジナル座標系で追加→同じ切抜判定→同じ変換で outPoints に追加
         let added = 0;
-        for (const p of [...sphereA, ...sphereB]) {
+        for (const p of [...markerPointsA, ...markerPointsB]) {
             const t = clipAndTransformToProfile(p.x, p.y, p.z, xA, yA, ux, uy, vx, vy, halfWidth);
             if (!t) continue;
-            outPoints.push({ x: t.x, y: t.y, z: t.z, intensity: p.intensity, red: p.red, green: p.green, blue: p.blue });
+            outPoints.push({ x: t.x, y: t.y, z: t.z, intensity: p.intensity ?? 0, red: p.red, green: p.green, blue: p.blue });
             added++;
         }
-        addLog(`スフィア点群を追加（切抜後に残る分のみ）: 追加${added}点（半径${SPHERE_RADIUS}m・マゼンタ）`);
+        if (useTargetMarker) {
+            addLog(`白黒ターゲットを追加（切抜後に残る分のみ）: 追加${added}点（半幅${targetHalf}m・正面向き）`);
+        } else {
+            addLog(`スフィア点群を追加（切抜後に残る分のみ）: 追加${added}点（半径${SPHERE_RADIUS}m・マゼンタ）`);
+        }
 
         if (outPoints.length === 0) {
             throw new Error('切抜幅内に点が見つかりませんでした（スフィアも含めて0点）。幅を広げてください。');
