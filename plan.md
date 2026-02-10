@@ -29,7 +29,7 @@
 | 条件 | 処理 |
 |------|------|
 | 選択候補が **COPC/LAZ の URL**（`external_link` が .copc.laz / .laz） | その URL を `encodeURIComponent` し、`potreeViewerBase + '?r=' + url` を `window.open(..., '_blank')` で開く |
-| 選択候補が **ZIP のみ**（`isZip: true`） | reg_id から `https://gsrt.digiarc.aist.go.jp/3ddb-pds/copc/{reg_id}.copc.laz` を組み立て、同様に `?r=` で開く（同一ホストに COPC がある場合のフォールバック） |
+| 選択候補が **ZIP のみ**（`isZip: true`） | reg_id から `https://gsvrg.ipri.aist.go.jp/3ddb-pds/copc/{reg_id}.copc.laz` を組み立て、同様に `?r=` で開く（同一ホストに COPC がある場合のフォールバック） |
 | 未選択・候補なし | ボタンは disabled のまま。クリック不可。 |
 
 ### 3. 定数・設定

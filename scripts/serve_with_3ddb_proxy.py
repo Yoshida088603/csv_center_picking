@@ -12,7 +12,7 @@ import sys
 import os
 
 PORT = 8000
-ALLOWED_HOSTS = ('gsrt.digiarc.aist.go.jp', 'grt.digiarc.aist.go.jp')
+ALLOWED_HOSTS = ('gsvrg.ipri.aist.go.jp', 'grt.ipri.aist.go.jp')
 
 
 class ProxyHandler(http.server.SimpleHTTPRequestHandler):

@@ -338,7 +338,7 @@ if (copcPotreeBtn) {
         if (c.external_link && /\.(copc\.laz|laz)$/i.test(c.external_link)) {
             directUrl = c.external_link;
         } else {
-            directUrl = `https://gsrt.digiarc.aist.go.jp/3ddb-pds/copc/${c.reg_id}.copc.laz`;
+            directUrl = `https://gsvrg.ipri.aist.go.jp/3ddb-pds/copc/${c.reg_id}.copc.laz`;
         }
         const useProxy = document.getElementById('copcUseProxy')?.checked === true;
         const rParam = useProxy
@@ -457,7 +457,7 @@ function formatFileSize(bytes) {
 // 3DDB COPC取得（平面直角→経緯度→検索→LAZ丸ごとDL）
 // ============================================================================
 
-const COPC_3DDB_DEFAULT_BASE = 'https://gsrt.digiarc.aist.go.jp/3ddb_demo';
+const COPC_3DDB_DEFAULT_BASE = 'https://gsvrg.ipri.aist.go.jp/3ddb_demo';
 const POTREE_COPC_VIEWER_BASE = 'https://Yoshida088603.github.io/potree-copc-viewer/';
 let copcCandidates = [];
 

@@ -14,7 +14,7 @@
 1. **入力**: `getQueryParam('r')` で `?r=...` を取得
 2. **パス解決**:
    - `id` が `https?://` で始まる → **その URL をそのまま** COPC のパスとして使用
-   - 否则 → `https://gsrt.digiarc.aist.go.jp/3ddb-pds/copc/${id}.copc.laz` を生成（reg_id 想定）
+   - 否则 → `https://gsvrg.ipri.aist.go.jp/3ddb-pds/copc/${id}.copc.laz` を生成（reg_id 想定）
 3. **読み込み**: `Potree.loadPointCloud(path, name, callback)` を各 ID/URL に対して実行
 4. **表示**: `viewer.scene.addPointCloud(e.pointcloud)` でシーンに追加
 
@@ -32,7 +32,7 @@
 - 候補の `external_link` が **.copc.laz または .laz の URL** なら、その URL をエンコードして  
   `https://Yoshida088603.github.io/potree-copc-viewer/?r=${encodeURIComponent(url)}` で開く
 - **ZIP のみの候補**（`isZip: true`）の場合は、COPC 直リンクがないため「Potreeで表示は COPC 形式のみ対応」などと案内するか、3DDB の reg_id から  
-  `https://gsrt.digiarc.aist.go.jp/3ddb-pds/copc/{reg_id}.copc.laz` を試す（同一ホストなら開ける可能性あり）
+  `https://gsvrg.ipri.aist.go.jp/3ddb-pds/copc/{reg_id}.copc.laz` を試す（同一ホストなら開ける可能性あり）
 
 ## 実装で使う情報
 
