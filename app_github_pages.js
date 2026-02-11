@@ -901,6 +901,9 @@ function classifyPointForPolygon(p, innerMath, outerMath, outerBBox = null) {
 // 立面図作成（境界基準の座標系変換：剛体回転＋平行移動、Z不変）
 // ============================================================================
 
+/** SIMA 立面図用の座標変換オプション（座標軸・視線方向・90°補正） */
+const SIMA_TRANSFORM_OPTS = { swapXZ: true, viewFromInterior: true, swapBoundaryDepth: true };
+
 /**
  * 境界線 A-B から X'軸ベクトル u と Y'軸ベクトル v を計算
  * u = normalize(B-A) または normalize(A-B)（向き指定による）
@@ -955,11 +958,10 @@ function getBoundaryClipPolygon(xA, yA, xB, yB, axes, marginM = 1, marginUpM = 1
 /**
  * 1点を境界基準座標系に変換し、立面を平面に投影（デフォルト動作）
  * 境界座標 (X', Y', Z') のうち 出力 (X''=X', Y''=Z, Z''=Y') でXY平面＝立面（境界方向×標高）
- * @param {boolean} [swapXZ=false] - true のとき X と Z を入れ替え（SIMA: 測量→数学で軸が入れ替わるため）
- * @param {boolean} [viewFromInterior=false] - true のとき奥行きを反転し、内側→外側の視線方向にする（SIMA用）
- * @param {boolean} [swapBoundaryDepth=false] - true のとき境界方向と奥行きを入れ替え、真上から見て左手←右手が視線方向になる（SIMA用）
+ * @param {Object} [opts] - { swapXZ, viewFromInterior, swapBoundaryDepth } SIMA_TRANSFORM_OPTS を渡すと SIMA 用
  */
-function transformPointBoundary(x, y, z, xA, yA, ux, uy, vx, vy, swapXZ = false, viewFromInterior = false, swapBoundaryDepth = false) {
+function transformPointBoundary(x, y, z, xA, yA, ux, uy, vx, vy, opts = {}) {
+    const { swapXZ = false, viewFromInterior = false, swapBoundaryDepth = false } = opts;
     const rx = x - xA;
     const ry = y - yA;
     let xp = rx * ux + ry * uy;
@@ -980,14 +982,12 @@ function scaleYPoints(points, scaleY) {
 
 /**
  * 点配列を破壊的に境界基準座標に変換（立面→平面投影、属性はそのまま）
- * @param {boolean} [swapXZ=false] - true のとき X と Z を入れ替え（SIMA用）
- * @param {boolean} [viewFromInterior=false] - true のとき内側→外側の視線方向（SIMA用）
- * @param {boolean} [swapBoundaryDepth=false] - true のとき境界方向と奥行きを入れ替え（SIMA用）
+ * @param {Object} [opts] - { swapXZ, viewFromInterior, swapBoundaryDepth } SIMA_TRANSFORM_OPTS を渡すと SIMA 用
  */
-function transformPointsBoundary(points, xA, yA, ux, uy, vx, vy, swapXZ = false, viewFromInterior = false, swapBoundaryDepth = false) {
+function transformPointsBoundary(points, xA, yA, ux, uy, vx, vy, opts = {}) {
     for (let i = 0; i < points.length; i++) {
         const p = points[i];
-        const t = transformPointBoundary(p.x, p.y, p.z, xA, yA, ux, uy, vx, vy, swapXZ, viewFromInterior, swapBoundaryDepth);
+        const t = transformPointBoundary(p.x, p.y, p.z, xA, yA, ux, uy, vx, vy, opts);
         p.x = t.x;
         p.y = t.y;
         p.z = t.z;
@@ -2298,6 +2298,43 @@ async function processBoundaryClipPolygonFromSim() {
     }
 }
 
+/** 立面図・辺ごとに使う定数 */
+const SPHERE_RADIUS = 0.01;
+const SPHERE_POINTS = 50;
+
+/**
+ * 辺情報からマーカー点群を生成（スフィア or 白黒ターゲット）
+ */
+function createMarkerPointsForEdge(edge, useTargetMarker, targetHalf, zA, zB) {
+    const { xA, yA, xB, yB, axes } = edge;
+    const { ux, uy, vx, vy } = axes;
+    if (useTargetMarker) {
+        return {
+            markerPointsA: generateCheckerboardTargetFacingProfile(xA, yA, zA, targetHalf, ux, uy, vx, vy),
+            markerPointsB: generateCheckerboardTargetFacingProfile(xB, yB, zB, targetHalf, ux, uy, vx, vy)
+        };
+    }
+    return {
+        markerPointsA: generateSpherePointCloud(xA, yA, zA, SPHERE_RADIUS, SPHERE_POINTS, true),
+        markerPointsB: generateSpherePointCloud(xB, yB, zB, SPHERE_RADIUS, SPHERE_POINTS, true)
+    };
+}
+
+/**
+ * 辺のマーカー点をSIMA用に変換して extraPoints 用の配列を返す
+ */
+function getTransformedMarkersForEdge(edge, useTargetMarker, targetHalf, zA, zB) {
+    const { markerPointsA, markerPointsB } = createMarkerPointsForEdge(edge, useTargetMarker, targetHalf, zA, zB);
+    const { xA, yA, axes } = edge;
+    const { ux, uy, vx, vy } = axes;
+    const extraPoints = [];
+    for (const p of [...markerPointsA, ...markerPointsB]) {
+        const t = transformPointBoundary(p.x, p.y, p.z, xA, yA, ux, uy, vx, vy, SIMA_TRANSFORM_OPTS);
+        extraPoints.push({ x: t.x, y: t.y, z: t.z, intensity: p.intensity ?? 0, red: p.red, green: p.green, blue: p.blue });
+    }
+    return extraPoints;
+}
+
 /**
  * SIMAの各辺について範囲クロップポリゴン内の点のみを残し、その辺の境界座標系に変換した立面図点群（1辺1LAS）を生成。
  */
@@ -2343,8 +2380,6 @@ async function processBoundaryPerEdgeFromSim() {
             edges.push({ edgeIndex: i, xA, yA, xB, yB, axes, clipPolygon: clipPoly });
         }
 
-        const SPHERE_RADIUS = 0.01;
-        const SPHERE_POINTS = 50;
         const useTargetMarker = document.querySelector('input[name="boundaryMarker"]:checked')?.value === 'target';
         const targetHalf = (parseFloat(document.getElementById('boundaryTargetSize')?.value) || 0.1);
         const zA = 0, zB = 0;
@@ -2367,25 +2402,13 @@ async function processBoundaryPerEdgeFromSim() {
             const arrayBuffer = await lazFile.arrayBuffer();
             for (let e = 0; e < edges.length; e++) {
                 const edge = edges[e];
-                const { xA, yA, xB, yB, axes, clipPolygon } = edge;
+                const { xA, yA, axes, clipPolygon } = edge;
                 const { ux, uy, vx, vy } = axes;
-                let markerPointsA, markerPointsB;
-                if (useTargetMarker) {
-                    markerPointsA = generateCheckerboardTargetFacingProfile(xA, yA, zA, targetHalf, ux, uy, vx, vy);
-                    markerPointsB = generateCheckerboardTargetFacingProfile(xB, yB, zB, targetHalf, ux, uy, vx, vy);
-                } else {
-                    markerPointsA = generateSpherePointCloud(xA, yA, zA, SPHERE_RADIUS, SPHERE_POINTS, true);
-                    markerPointsB = generateSpherePointCloud(xB, yB, zB, SPHERE_RADIUS, SPHERE_POINTS, true);
-                }
-                const extraPoints = [];
-                for (const p of [...markerPointsA, ...markerPointsB]) {
-                    const t = transformPointBoundary(p.x, p.y, p.z, xA, yA, ux, uy, vx, vy, true, true, true);
-                    extraPoints.push({ x: t.x, y: t.y, z: t.z, intensity: p.intensity ?? 0, red: p.red, green: p.green, blue: p.blue });
-                }
+                const extraPoints = getTransformedMarkersForEdge(edge, useTargetMarker, targetHalf, zA, zB);
                 const blob = await streamLAZToLASBlob(arrayBuffer, header, {
                     filterPoint: (p) => pointInPolygon(p.x, p.y, clipPolygon),
                     onPoint(p) {
-                        const t = transformPointBoundary(p.x, p.y, p.z, xA, yA, ux, uy, vx, vy, true, true, true);
+                        const t = transformPointBoundary(p.x, p.y, p.z, xA, yA, ux, uy, vx, vy, SIMA_TRANSFORM_OPTS);
                         p.x = t.x;
                         p.y = t.y;
                         p.z = t.z;
@@ -2413,19 +2436,12 @@ async function processBoundaryPerEdgeFromSim() {
             addLog(`読込: ${points.length.toLocaleString()}点`);
             for (let e = 0; e < edges.length; e++) {
                 const edge = edges[e];
-                const { xA, yA, xB, yB, axes, clipPolygon } = edge;
+                const { xA, yA, axes, clipPolygon } = edge;
                 const { ux, uy, vx, vy } = axes;
                 const filtered = points.filter((p) => pointInPolygon(p.x, p.y, clipPolygon));
-                let markerPointsA, markerPointsB;
-                if (useTargetMarker) {
-                    markerPointsA = generateCheckerboardTargetFacingProfile(xA, yA, zA, targetHalf, ux, uy, vx, vy);
-                    markerPointsB = generateCheckerboardTargetFacingProfile(xB, yB, zB, targetHalf, ux, uy, vx, vy);
-                } else {
-                    markerPointsA = generateSpherePointCloud(xA, yA, zA, SPHERE_RADIUS, SPHERE_POINTS, true);
-                    markerPointsB = generateSpherePointCloud(xB, yB, zB, SPHERE_RADIUS, SPHERE_POINTS, true);
-                }
+                const { markerPointsA, markerPointsB } = createMarkerPointsForEdge(edge, useTargetMarker, targetHalf, zA, zB);
                 const outPoints = [...filtered, ...markerPointsA, ...markerPointsB];
-                transformPointsBoundary(outPoints, xA, yA, ux, uy, vx, vy, true, true, true);
+                transformPointsBoundary(outPoints, xA, yA, ux, uy, vx, vy, SIMA_TRANSFORM_OPTS);
                 for (const p of outPoints) ensurePointRGB(p);
                 const buf = createLASFile(outPoints, header);
                 blobs.push(new Blob([buf], { type: 'application/octet-stream' }));
@@ -2561,12 +2577,12 @@ async function processBoundaryTransform() {
             const arrayBuffer = await lazFile.arrayBuffer();
             const extraPoints = [];
             for (const p of [...markerPointsA, ...markerPointsB]) {
-                const t = transformPointBoundary(p.x, p.y, p.z, xA, yA, ux, uy, vx, vy);
+                const t = transformPointBoundary(p.x, p.y, p.z, xA, yA, ux, uy, vx, vy, {});
                 extraPoints.push({ x: t.x, y: t.y, z: t.z, intensity: p.intensity ?? 0, red: p.red, green: p.green, blue: p.blue });
             }
             boundaryOutputBlob = await streamLAZToLASBlob(arrayBuffer, header, {
                 onPoint(p, i) {
-                    const t = transformPointBoundary(p.x, p.y, p.z, xA, yA, ux, uy, vx, vy);
+                    const t = transformPointBoundary(p.x, p.y, p.z, xA, yA, ux, uy, vx, vy, {});
                     p.x = t.x;
                     p.y = t.y;
                     p.z = t.z;
@@ -2593,7 +2609,7 @@ async function processBoundaryTransform() {
             else addLog(`スフィア点群を追加: A・B各${SPHERE_POINTS}点（半径${SPHERE_RADIUS}m・マゼンタ）、座標変換前に追加`);
             addLog('座標変換を適用しています...');
             updateProgress(75, '座標変換中');
-            transformPointsBoundary(points, xA, yA, ux, uy, vx, vy);
+            transformPointsBoundary(points, xA, yA, ux, uy, vx, vy, {});
         } else {
             addLog('LASファイルを読み込んでいます...');
             const arrayBuffer = await lazFile.arrayBuffer();
@@ -2605,7 +2621,7 @@ async function processBoundaryTransform() {
             else addLog(`スフィア点群を追加: A・B各${SPHERE_POINTS}点（半径${SPHERE_RADIUS}m・マゼンタ）、座標変換前に追加`);
             addLog('座標変換を適用しています...');
             updateProgress(70, '座標変換中');
-            transformPointsBoundary(points, xA, yA, ux, uy, vx, vy);
+            transformPointsBoundary(points, xA, yA, ux, uy, vx, vy, {});
         }
 
         let blob;
