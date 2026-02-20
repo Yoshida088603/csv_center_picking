@@ -8,7 +8,7 @@ LAZ/LAS 点群をブラウザ内で処理するツール群。中心抽出・立
 
 **👉 [https://yoshida088603.github.io/yokutsukau_pointcloud/](https://yoshida088603.github.io/yokutsukau_pointcloud/)**
 
-サーバー不要でブラウザ上でLAZ/LASを処理できます。1GB以上のファイルも対応可能
+サーバー不要でブラウザ上でLAZ/LASを処理できます。土地家屋調査士実務では数百万点規模では不十分な場面もありますが、**約2億点程度までの点群処理**ができるのが本ツールのメリットです。
 
 ![よく使う点群処理 UI](assets/ui-screenshotV2.png)
 
@@ -21,7 +21,7 @@ LAZ/LAS 点群をブラウザ内で処理するツール群。中心抽出・立
 - ✅ **LAZ圧縮対応**（laz-perf WASM）
 - ✅ **オフライン処理**（データは外部に送信されず、処理中はネット不要）
 - ✅ **静的ホスティングのみ**（GitHub Pagesで動作）
-- ✅ **ストリーミング処理**　（1GBを超える大容量ファイルに対応
+- ✅ **ストリーミング処理**　（２億点/1GB程度までの大容量LAZに対応）
 
 laz-perf WASMを統合し、LAZ/LAS処理がブラウザ内オフラインで完結することを検証・実現しています。
 
@@ -41,22 +41,7 @@ laz-perf WASMを統合し、LAZ/LAS処理がブラウザ内オフラインで完
 
 ## 📦 ローカルでの起動と GitHub Pages での公開
 
-※アプリの操作（ファイル選択→実行→ダウンロード）はライブデモでそのまま試せます。以下は開発・検証用の起動・公開手順です。
-
-### ローカルで試す
-
-```bash
-python -m http.server 8000
-# ブラウザで http://localhost:8000/index.html
-```
-
-### GitHub Pagesで公開する
-
-1. ルートに `index.html`（ブラウザ完結版）を配置済み。`app_github_pages.js` をアップロード
-2. GitHub Pages を有効化
-3. `https://<username>.github.io/yokutsukau_pointcloud/` でアクセス
-
-**⚠️ 注意**: 必ずルート（`/` または `index.html`）を開いてください。`/variants/index.html` はサーバー版用のため、GitHub Pages では API がなく `Failed to fetch` になります。
+開発・検証用の起動手順と GitHub Pages での公開方法は **[docs/LOCAL_AND_GITHUB_PAGES.md](docs/LOCAL_AND_GITHUB_PAGES.md)** にまとめています。
 
 ### アーキテクチャ
 
