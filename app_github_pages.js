@@ -42,6 +42,7 @@ const CLASS_OUTSIDE = 3;
 let lazFile = null;
 let csvFile = null;
 let simFile = null;
+let apaFile = null;
 let centers = [];
 let csvLabels = [];
 let csvHasZ = false;
@@ -146,6 +147,9 @@ const downloadCsvBtn = document.getElementById('downloadCsvBtn');
 const simInput = document.getElementById('simFile');
 const simLabel = document.getElementById('simLabel');
 const simInfo = document.getElementById('simInfo');
+const apaInput = document.getElementById('apaFile');
+const apaLabel = document.getElementById('apaLabel');
+const apaInfo = document.getElementById('apaInfo');
 
 // ============================================================================
 // イベントハンドラと初期化
@@ -185,6 +189,16 @@ if (simInput) {
         checkFiles();
     });
 }
+if (apaInput) {
+    apaInput.addEventListener('change', (e) => {
+        apaFile = e.target.files[0];
+        if (apaFile) {
+            if (apaLabel) apaLabel.classList.add('has-file');
+            if (apaInfo) apaInfo.textContent = `${apaFile.name} (${formatFileSize(apaFile.size)})`;
+        }
+        checkFiles();
+    });
+}
 
 // ドラッグ＆ドロップ（ファイル種類に応じてラジオを自動選択）
 const fileDropZone = document.getElementById('fileDropZone');
@@ -218,6 +232,7 @@ processBtn.addEventListener('click', () => {
     if (mode === 'section') return processSectionMode();
     if (mode === 'polygon') return processPolygonBoundary();
     if (mode === 'target') return processTargetCorners();
+    if (mode === 'apa') return processApaFile();
     return processFiles();
 });
 
@@ -236,6 +251,12 @@ document.querySelectorAll('input[name="copcInputMode"]').forEach((radio) => {
         if (copcSimInput) copcSimInput.style.display = isPoint ? 'none' : 'block';
     });
 });
+const copcUseProxyEl = document.getElementById('copcUseProxy');
+if (copcUseProxyEl) {
+    copcUseProxyEl.addEventListener('change', () => {
+        if (typeof checkCopcProxyAvailable === 'function') checkCopcProxyAvailable();
+    });
+}
 if (copcSimFile && copcSimInfo) {
     copcSimFile.addEventListener('change', () => {
         const f = copcSimFile.files?.[0];
@@ -277,13 +298,20 @@ if (copcSearchBtn) {
             }
             const text = await file.text();
             const polygonXY = parseSim(text);
-            if (!polygonXY || polygonXY.length < 3) {
-                showCopcMessage('SIMAから有効なポリゴン（3頂点以上）を取得できませんでした。', true);
-                return;
+            if (polygonXY && polygonXY.length >= 3) {
+                areaWkt = simaPolygonToWkt(polygonXY, epsg);
+                limit = 200;
+                console.log('SIMA ポリゴン:', polygonXY.length, '頂点 → WKT で検索');
+            } else {
+                const a01Points = parseSimA01Points(text);
+                if (!a01Points || a01Points.length === 0) {
+                    showCopcMessage('SIMAから有効な座標（A01）を取得できませんでした。', true);
+                    return;
+                }
+                areaWkt = simaPointsToWkt(a01Points, epsg);
+                limit = 200;
+                console.log('SIMA A01のみ:', a01Points.length, '点 → 検索範囲 WKT で検索');
             }
-            areaWkt = simaPolygonToWkt(polygonXY, epsg);
-            limit = 200;
-            console.log('SIMA ポリゴン:', polygonXY.length, '頂点 → WKT で検索');
         }
 
         copcSearchBtn.disabled = true;
@@ -395,9 +423,14 @@ document.querySelectorAll('input[name="processMode"]').forEach((radio) => {
         const isPolygon = mode === 'polygon';
         const isTarget = mode === 'target';
         const isCopc = mode === 'copc';
+        const isApa = mode === 'apa';
         const boundaryInputMode = document.querySelector('input[name="boundaryInputMode"]:checked')?.value || 'twoPoint';
         const isBoundarySima = isBoundary && boundaryInputMode === 'simaPerEdge';
-        if (csvSection) csvSection.style.display = (isCenter || mode === 'section') ? 'block' : 'none';
+        const lazSection = document.getElementById('lazSection');
+        const apaSection = document.getElementById('apaSection');
+        if (lazSection) lazSection.style.display = isApa ? 'none' : 'block';
+        if (csvSection) csvSection.style.display = isApa ? 'none' : ((isCenter || mode === 'section') ? 'block' : 'none');
+        if (apaSection) apaSection.style.display = isApa ? 'block' : 'none';
         if (boundarySection) boundarySection.style.display = isBoundaryLike ? 'block' : 'none';
         const boundarySectionTitle = document.getElementById('boundarySectionTitle');
         if (boundarySectionTitle) boundarySectionTitle.textContent = isBoundary ? '立面図作成' : '縦断・横断図作成（基準線AB）';
@@ -413,10 +446,11 @@ document.querySelectorAll('input[name="processMode"]').forEach((radio) => {
         if (sectionCsvColB) sectionCsvColB.style.display = mode === 'section' ? 'block' : 'none';
         if (abPointGrid) abPointGrid.style.gridTemplateColumns = mode === 'section' ? 'auto 1fr 1fr 1fr' : '1fr 1fr 1fr';
         if (mode === 'section' && csvFile) fillSectionCsvDropdowns();
-        if (simSection) simSection.style.display = (isPolygon || isBoundarySima) ? 'block' : 'none';
+        if (simSection) simSection.style.display = isApa ? 'none' : ((isPolygon || isBoundarySima) ? 'block' : 'none');
         if (polygonSettings) polygonSettings.style.display = isPolygon ? 'block' : 'none';
         if (targetSettings) targetSettings.style.display = isTarget ? 'block' : 'none';
         if (copcSection) copcSection.style.display = isCopc ? 'block' : 'none';
+        if (isCopc && document.getElementById('copcUseProxy')?.checked && typeof checkCopcProxyAvailable === 'function') checkCopcProxyAvailable();
         if (centerSettings) centerSettings.style.display = isCenter ? 'block' : 'none';
         if (sectionSettings) sectionSettings.style.display = mode === 'section' ? 'block' : 'none';
         if (mode === 'section' && typeof updateSectionCountModeUI === 'function') updateSectionCountModeUI();
@@ -549,7 +583,9 @@ function checkFiles() {
     const mode = document.querySelector('input[name="processMode"]:checked')?.value || 'center';
     const boundaryInputMode = document.querySelector('input[name="boundaryInputMode"]:checked')?.value || 'twoPoint';
     const sectionCountMode = document.querySelector('input[name="sectionCountMode"]:checked')?.value || 'single';
-    if (mode === 'boundary' && boundaryInputMode === 'simaPerEdge') {
+    if (mode === 'apa') {
+        processBtn.disabled = !apaFile;
+    } else if (mode === 'boundary' && boundaryInputMode === 'simaPerEdge') {
         processBtn.disabled = !(lazFile && simFile && wasmReady);
     } else if (mode === 'section' && sectionCountMode === 'multi') {
         processBtn.disabled = !(lazFile && csvFile && wasmReady);
@@ -591,6 +627,10 @@ function applyFilesFromDrop(files) {
             simFile = file;
             if (simLabel) simLabel.classList.add('has-file');
             if (simInfo) simInfo.textContent = `${file.name} (${formatFileSize(file.size)})`;
+        } else if (ext === '.apa') {
+            apaFile = file;
+            if (apaLabel) apaLabel.classList.add('has-file');
+            if (apaInfo) apaInfo.textContent = `${file.name} (${formatFileSize(file.size)})`;
         }
     }
     checkFiles();
@@ -601,6 +641,107 @@ function formatFileSize(bytes) {
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB';
     if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
     return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+}
+
+// ============================================================================
+// APA処理（Fブロック書き換え・チェックサム再計算）
+// ============================================================================
+
+/** キーパターン検証: 3文字以上・'-'で始まる・カンマ不可 */
+function validateApaKeyPattern(keyPattern) {
+    return keyPattern.length >= 3 && keyPattern.startsWith('-') && !keyPattern.includes(',');
+}
+
+/**
+ * データブロック（チェックサムの前のカンマまで）をSHIFT_JISバイト列とみなしてチェックサムを計算。
+ * Checksum = (S mod 64) + 32。encoding-japanese 使用。
+ */
+function calculateChecksumShiftJis(dataBlockStr) {
+    const Encoding = globalThis.Encoding || window.Encoding;
+    if (!Encoding) throw new Error('Encoding ライブラリが読み込まれていません');
+    const unicodeArray = Encoding.stringToCode(dataBlockStr);
+    const sjisArray = Encoding.convert(unicodeArray, { to: 'SJIS', from: 'UNICODE' });
+    const arr = Array.isArray(sjisArray) ? sjisArray : Array.from(sjisArray);
+    const sum = arr.reduce((a, b) => a + b, 0);
+    const checksum = (sum % 64) + 32;
+    return String.fromCharCode(checksum);
+}
+
+/**
+ * Fブロックをキーパターンで書き換え、チェックサムを再計算して返す。reference/process_apa.py と同様。
+ */
+function rewriteAndChecksumWithKey(dataBlock, keyPattern) {
+    const parts = dataBlock.split(',');
+    if (parts[0] === 'F' && parts.length > 2 && (parts[2] || '').includes(keyPattern)) {
+        const key = keyPattern.slice(1) + (parts[2].split(keyPattern).pop() || '');
+        parts[1] = key + (parts[1] || '');
+        parts[2] = (parts[2] || '').split(keyPattern)[0] || '';
+    }
+    const modifiedBlock = parts.slice(0, -1).join(',') + ',';
+    const checksum = calculateChecksumShiftJis(modifiedBlock);
+    return modifiedBlock + checksum + ',';
+}
+
+/**
+ * APAファイルを読み、Fブロックを書き換えてチェックサムを再計算し、_processed.apa をダウンロードさせる。
+ */
+async function processApaFile() {
+    if (!apaFile) {
+        addLog('APAファイルを選択してください。');
+        return;
+    }
+    const keyEl = document.getElementById('apaKeyPattern');
+    const keyPattern = (keyEl && keyEl.value && keyEl.value.trim()) || '';
+    if (!validateApaKeyPattern(keyPattern)) {
+        addLog('キーパターンは3文字以上で「-」で始まり、カンマを含まない文字列を入力してください。（例: -6B）');
+        alert('キーパターンが無効です。3文字以上・「-」で始まる・カンマ不可');
+        return;
+    }
+    processBtn.disabled = true;
+    if (progressSection) progressSection.classList.add('active');
+    if (resultSection) resultSection.classList.remove('active');
+    if (logDiv) logDiv.innerHTML = '';
+    addLog('APA処理を開始します...');
+    try {
+        const ab = await apaFile.arrayBuffer();
+        const decoder = new TextDecoder('shift-jis');
+        const text = decoder.decode(ab);
+        const lines = text.split(/\r?\n/);
+        const outLines = [];
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (line.startsWith('F')) {
+                outLines.push(rewriteAndChecksumWithKey(line, keyPattern));
+            } else {
+                outLines.push(lines[i]); // 改行を保持するため元の行をそのまま追加
+            }
+        }
+        const outText = outLines.join('\n');
+        const Encoding = globalThis.Encoding || window.Encoding;
+        if (!Encoding) throw new Error('Encoding ライブラリが読み込まれていません');
+        const unicodeArray = Encoding.stringToCode(outText);
+        const sjisArray = Encoding.convert(unicodeArray, { to: 'SJIS', from: 'UNICODE' });
+        const bytes = new Uint8Array(Array.isArray(sjisArray) ? sjisArray : sjisArray);
+        const blob = new Blob([bytes], { type: 'application/octet-stream' });
+        const baseName = apaFile.name.replace(/\.apa$/i, '');
+        const downloadName = `${baseName}_processed.apa`;
+        const url = URL.createObjectURL(blob);
+        if (downloadBtn) {
+            downloadBtn.style.display = '';
+            downloadBtn.href = url;
+            downloadBtn.download = downloadName;
+        }
+        if (downloadCsvBtn) downloadCsvBtn.style.display = 'none';
+        if (resultSection) resultSection.classList.add('active');
+        if (resultText) resultText.innerHTML = `APA処理が完了しました。<br>${downloadName}（${formatFileSize(blob.size)}）をダウンロードできます。`;
+        addLog(`✅ APA処理完了: ${downloadName}`);
+    } catch (err) {
+        console.error(err);
+        addLog(`❌ エラー: ${err.message}`);
+        alert(`エラー: ${err.message}`);
+    } finally {
+        processBtn.disabled = false;
+    }
 }
 
 // ============================================================================
@@ -788,6 +929,41 @@ function showCopcMessage(text, isError = false) {
     el.style.display = 'block';
 }
 
+/** プロキシ経由がチェックされているとき、/api/3ddb_proxy が利用可能か確認し、結果を copcProxyStatus に表示する */
+async function checkCopcProxyAvailable() {
+    const statusEl = document.getElementById('copcProxyStatus');
+    const useProxy = document.getElementById('copcUseProxy')?.checked === true;
+    if (!statusEl) return;
+    if (!useProxy) {
+        statusEl.style.display = 'none';
+        statusEl.textContent = '';
+        return;
+    }
+    statusEl.textContent = 'プロキシを確認中...';
+    statusEl.className = 'status';
+    statusEl.style.display = 'block';
+    const origin = typeof location !== 'undefined' && location.origin ? location.origin : '';
+    if (!origin || origin === 'file://' || origin === 'null') {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'ファイルで開いています。アドレスバーに http://localhost:8000 と入力し、プロキシ付きサーバーで開き直してください。';
+        return;
+    }
+    try {
+        const testUrl = origin + '/api/3ddb_proxy?url=' + encodeURIComponent('https://example.com/');
+        const r = await fetch(testUrl, { method: 'GET', mode: 'same-origin' });
+        if (r.status === 404) {
+            statusEl.className = 'status error';
+            statusEl.textContent = 'プロキシがありません。ターミナルで python scripts/serve_with_3ddb_proxy.py を実行し、このページを http://localhost:8000 で開き直してください。';
+        } else {
+            statusEl.className = 'status success';
+            statusEl.textContent = 'プロキシ利用可能です。検索できます。';
+        }
+    } catch (e) {
+        statusEl.className = 'status error';
+        statusEl.textContent = 'プロキシに接続できません。python scripts/serve_with_3ddb_proxy.py で起動し、http://localhost:8000 で開き直してください。';
+    }
+}
+
 function safeFilenameFromTitle(title) {
     return (title || '')
         .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
@@ -921,6 +1097,49 @@ function parseSim(text) {
         }
     });
     return order.map(pt => points[pt]).filter(Boolean);
+}
+
+/**
+ * SIMA から A01 行のみを抽出し、座標列 [[x,y],...]（測量座標系・出現順）を返す。B01 は参照しない。
+ * COPC 検索でポリゴンにならない SIMA のフォールバック用。parseSim は変更しない。
+ */
+function parseSimA01Points(text) {
+    const points = [];
+    text.split(/\r?\n/).forEach(line => {
+        const cols = line.split(',').map(s => (typeof s === 'string' ? s : '').trim());
+        if (cols.length < 5 || cols[0] !== 'A01') return;
+        const x = parseFloat(cols[3]);
+        const y = parseFloat(cols[4]);
+        if (Number.isFinite(x) && Number.isFinite(y)) points.push([x, y]);
+    });
+    return points;
+}
+
+/**
+ * A01 座標列から COPC 検索用 WKT を生成。1点なら POINT、2点以上ならバウンディングボックスの POLYGON。
+ * @param {number[][]} points - [[x,y],...] 測量座標系（parseSimA01Points の戻り値）
+ * @param {string} epsg - 系の EPSG コード
+ * @returns {string} POINT(lon lat) または POLYGON((...))
+ */
+function simaPointsToWkt(points, epsg) {
+    if (!points || points.length === 0) throw new Error('座標がありません');
+    if (points.length === 1) {
+        const { lon, lat } = convertPlaneRectToLonLat(epsg, points[0][0], points[0][1]);
+        return `POINT(${lon} ${lat})`;
+    }
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const [x, y] of points) {
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+    }
+    const corners = [[minX, minY], [maxX, minY], [maxX, maxY], [minX, maxY], [minX, minY]];
+    const ring = corners.map(([first, second]) => {
+        const { lon, lat } = convertPlaneRectToLonLat(epsg, first, second);
+        return `${lon} ${lat}`;
+    });
+    return `POLYGON((${ring.join(', ')}))`;
 }
 
 /** オフセット量は5mm=0.005m。Clipper.js は HTML で CDN 読み込み。 */

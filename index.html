@@ -311,11 +311,15 @@
                         <input type="radio" name="processMode" id="processModeCopc" value="copc">
                         3DDB COPC取得（平面直角→検索→LAZ丸ごとDL）
                     </label>
+                    <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal;">
+                        <input type="radio" name="processMode" id="processModeApa" value="apa">
+                        APA処理（Fブロック書き換え・チェックサム再計算）
+                    </label>
                 </div>
             </div>
 
             <div id="fileDropZone" class="file-drop-zone">
-                <div class="file-input-wrapper">
+                <div class="file-input-wrapper" id="lazSection">
                     <label for="lazFile" class="file-input-label" id="lazLabel">
                         <strong>📁 LAZ/LASファイルを選択</strong>
                         <div class="file-info" id="lazInfo">✅ LAZ圧縮およびLAS非圧縮の両方に完全対応（ブラウザ内処理）</div>
@@ -337,7 +341,20 @@
                         <div class="file-info" id="simInfo">測量座標系で作成した画地SIMAを選択</div>
                     </label>
                     <input type="file" id="simFile" accept=".sim">
+                </div>
+
+                <div class="file-input-wrapper" id="apaSection" style="display: none;">
+                    <label for="apaFile" class="file-input-label" id="apaLabel">
+                        <strong>📄 APAファイルを選択</strong>
+                        <div class="file-info" id="apaInfo">測量データ共通フォーマット（.apa）。Fブロックをキーで書き換え・チェックサム再計算</div>
+                    </label>
+                    <input type="file" id="apaFile" accept=".apa">
+                    <div class="setting-item" style="margin-top: 12px;">
+                        <label for="apaKeyPattern">キーパターン（例: -6B）</label>
+                        <input type="text" id="apaKeyPattern" placeholder="-6B" maxlength="32" style="width:100%;padding:10px;border:1px solid #ddd;border-radius:5px;font-size:14px;">
+                        <div class="file-info" style="margin-top:4px;">3文字以上・「-」で始まる・カンマは使用不可</div>
                     </div>
+                </div>
             </div>
 
             <div id="boundarySection" style="display: none;" class="settings">
@@ -542,6 +559,7 @@
                         <input type="checkbox" id="copcUseProxy">
                         プロキシ経由で検索（ローカルは必須。python scripts/serve_with_3ddb_proxy.py で起動すること）
                     </label>
+                    <div id="copcProxyStatus" class="status" style="margin-top: 8px; font-size: 12px; display: none;"></div>
                 </div>
                 <div style="display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap;">
                     <button type="button" class="process-btn" id="copcSearchBtn" style="max-width: 200px;">COPC検索</button>
@@ -632,6 +650,7 @@
 
     <script src="https://cdn.jsdelivr.net/npm/clipper-lib@6.4.2/clipper.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/proj4@2.9.2/dist/proj4.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/encoding-japanese/2.2.0/encoding.min.js"></script>
     <script type="module" src="app_github_pages.js"></script>
 </body>
 </html>
